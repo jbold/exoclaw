@@ -46,8 +46,16 @@ impl SessionStore {
         self.sessions.get(key)
     }
 
+    pub fn get_mut(&mut self, key: &str) -> Option<&mut Session> {
+        self.sessions.get_mut(key)
+    }
+
     pub fn count(&self) -> usize {
         self.sessions.len()
+    }
+
+    pub fn sessions_mut(&mut self) -> &mut HashMap<String, Session> {
+        &mut self.sessions
     }
 }
 

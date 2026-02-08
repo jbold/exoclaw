@@ -1,37 +1,63 @@
-# exoclaw configuration
-# Copy to ~/.exoclaw/config.toml or pass via --config flag.
+# Exoclaw Configuration Reference
+# Copy to ~/.exoclaw/config.toml and customize.
+# All sections are optional — exoclaw works with zero config for local dev.
 
 [gateway]
 port = 7200
 bind = "127.0.0.1"
-# token = "set-via-EXOCLAW_TOKEN-env-var"
+# Auth token: set via EXOCLAW_TOKEN env var (never put tokens in config files)
 
 [agent]
-provider = "anthropic"
-model = "claude-sonnet-4-5-20250929"
-max_tokens = 4096
+id = "personal"
+provider = "anthropic"                  # "anthropic" | "openai"
+model = "claude-sonnet-4-5-20250929"    # model identifier
+max_tokens = 4096                       # max tokens per LLM response
+# api_key: set via ANTHROPIC_API_KEY or OPENAI_API_KEY env var
+# system_prompt = "You are a helpful assistant."
+# soul_path = "~/.exoclaw/soul.md"      # personality document (~500 tokens)
+# tools = ["echo", "web-search"]        # plugin names this agent can use
 
+# Optional fallback provider (used if primary fails)
 [agent.fallback]
+id = "fallback"
 provider = "openai"
 model = "gpt-4o"
+max_tokens = 4096
 
-# Optional: NATS message bus for persistence/replay
-# [bus]
-# url = "nats://localhost:4222"
+# Token budgets — omit for unlimited
+[budgets]
+session = 50000     # 50K tokens per session
+daily = 500000      # 500K tokens per day
+monthly = 5000000   # 5M tokens per month
 
-# Plugin declarations — each channel is a WASM module
+# WASM plugins — each plugin runs in an isolated sandbox
+[[plugins]]
+name = "echo"
+path = "examples/echo-plugin/target/wasm32-unknown-unknown/release/echo_plugin.wasm"
+capabilities = []   # echo needs no external access
+
 [[plugins]]
 name = "telegram"
 path = "plugins/telegram.wasm"
-# Capabilities granted to this plugin:
-capabilities = ["http:api.telegram.org", "store:sessions"]
+capabilities = [
+    "http:api.telegram.org",    # HTTP access to Telegram API
+    "store:sessions",           # host storage access
+]
 
 [[plugins]]
 name = "whatsapp"
 path = "plugins/whatsapp.wasm"
-capabilities = ["http:web.whatsapp.com", "store:sessions"]
+capabilities = [
+    "http:web.whatsapp.com",
+    "store:sessions",
+]
 
-# Session routing bindings (priority: peer > guild > team > account > channel > default)
+# Session routing bindings
+# Priority: peer > guild > team > account > channel > default
+[[bindings]]
+channel = "websocket"
+agent_id = "personal"
+
 [[bindings]]
 channel = "telegram"
 agent_id = "personal"
@@ -40,3 +66,9 @@ agent_id = "personal"
 channel = "whatsapp"
 peer_id = "work-group-123"
 agent_id = "work"
+
+# Example: route a specific Discord guild to a work agent
+# [[bindings]]
+# channel = "discord"
+# guild_id = "my-server-id"
+# agent_id = "work"
