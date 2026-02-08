@@ -6,6 +6,16 @@ use tracing::debug;
 
 use super::AgentEvent;
 
+fn anthropic_endpoint() -> String {
+    std::env::var("EXOCLAW_ANTHROPIC_ENDPOINT")
+        .unwrap_or_else(|_| "https://api.anthropic.com/v1/messages".to_string())
+}
+
+fn openai_endpoint() -> String {
+    std::env::var("EXOCLAW_OPENAI_ENDPOINT")
+        .unwrap_or_else(|_| "https://api.openai.com/v1/chat/completions".to_string())
+}
+
 /// Trait for LLM provider implementations.
 #[async_trait]
 pub trait LlmProvider: Send + Sync {
@@ -16,6 +26,29 @@ pub trait LlmProvider: Send + Sync {
         system_prompt: Option<&str>,
         tx: mpsc::Sender<AgentEvent>,
     ) -> anyhow::Result<()>;
+}
+
+pub struct MockProvider;
+
+#[async_trait]
+impl LlmProvider for MockProvider {
+    async fn call_streaming(
+        &self,
+        _messages: &[serde_json::Value],
+        _tools: &[serde_json::Value],
+        _system_prompt: Option<&str>,
+        tx: mpsc::Sender<AgentEvent>,
+    ) -> anyhow::Result<()> {
+        let _ = tx.send(AgentEvent::Text("mock response".to_string())).await;
+        let _ = tx
+            .send(AgentEvent::Usage {
+                input_tokens: 5,
+                output_tokens: 1,
+            })
+            .await;
+        let _ = tx.send(AgentEvent::Done).await;
+        Ok(())
+    }
 }
 
 pub struct AnthropicProvider {
@@ -62,7 +95,7 @@ impl LlmProvider for AnthropicProvider {
 
         let response = self
             .client
-            .post("https://api.anthropic.com/v1/messages")
+            .post(anthropic_endpoint())
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", "2023-06-01")
             .header("content-type", "application/json")
@@ -272,7 +305,7 @@ impl LlmProvider for OpenAiProvider {
 
         let response = self
             .client
-            .post("https://api.openai.com/v1/chat/completions")
+            .post(openai_endpoint())
             .header("Authorization", format!("Bearer {}", self.api_key))
             .header("content-type", "application/json")
             .json(&body)
@@ -410,6 +443,10 @@ impl LlmProvider for OpenAiProvider {
 
 /// Create a provider from config.
 pub fn from_config(config: &crate::config::AgentDefConfig) -> anyhow::Result<Box<dyn LlmProvider>> {
+    if config.provider == "mock" {
+        return Ok(Box::new(MockProvider));
+    }
+
     let api_key = config.api_key.clone().ok_or_else(|| {
         anyhow::anyhow!(
             "no API key for provider '{}'. Set {} env var.",

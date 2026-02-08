@@ -30,6 +30,50 @@ pub enum MessageContent {
     },
 }
 
+impl Message {
+    /// Create a text message with current timestamp.
+    pub fn text(role: &str, text: impl Into<String>) -> Self {
+        Self {
+            role: role.to_string(),
+            content: MessageContent::Text { text: text.into() },
+            timestamp: chrono::Utc::now(),
+            token_count: None,
+        }
+    }
+
+    /// Convert to a provider-facing message format.
+    pub fn as_provider_message(&self) -> Option<serde_json::Value> {
+        match &self.content {
+            MessageContent::Text { text } => Some(serde_json::json!({
+                "role": self.role,
+                "content": text,
+            })),
+            MessageContent::ToolUse { id, name, input } => Some(serde_json::json!({
+                "role": "assistant",
+                "content": [{
+                    "type": "tool_use",
+                    "id": id,
+                    "name": name,
+                    "input": input,
+                }],
+            })),
+            MessageContent::ToolResult {
+                tool_use_id,
+                content,
+                is_error,
+            } => Some(serde_json::json!({
+                "role": "user",
+                "content": [{
+                    "type": "tool_result",
+                    "tool_use_id": tool_use_id,
+                    "content": content,
+                    "is_error": is_error,
+                }],
+            })),
+        }
+    }
+}
+
 /// Normalized incoming message from any channel.
 /// Used by the router to determine the target agent and session.
 #[derive(Debug, Clone, Serialize, Deserialize)]

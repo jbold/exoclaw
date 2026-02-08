@@ -1,5 +1,5 @@
-use exoclaw::sandbox::PluginHost;
 use exoclaw::sandbox::capabilities::Capability;
+use exoclaw::sandbox::{PluginHost, PluginType};
 
 /// Path to the mock-channel plugin WASM binary.
 fn mock_channel_wasm_path() -> String {
@@ -15,18 +15,9 @@ fn register_mock_channel_detects_adapter_type() {
     host.register("mock", &mock_channel_wasm_path(), vec![])
         .unwrap();
 
-    // Should not appear as a tool plugin since it has parse_incoming
     assert!(host.has_plugin("mock"));
-
-    // The describe() export returns channel_adapter type info, but detect_plugin_type
-    // checks describe() first (which returns valid JSON → Tool), then falls back.
-    // Since describe() returns valid JSON, it will be detected as Tool with schema.
-    // The plugin_type method exposes this.
-    // Note: In practice, the describe() for a channel adapter could return
-    // a type field that we inspect. For now, the mock plugin has describe()
-    // returning valid JSON so it's detected as Tool type.
-    // The find_channel_adapter lookup works by matching PluginType::ChannelAdapter.
-    // We need to verify parse_incoming works regardless of type detection.
+    assert_eq!(host.plugin_type("mock"), Some(&PluginType::ChannelAdapter));
+    assert_eq!(host.find_channel_adapter("mock"), Some("mock"));
 }
 
 #[test]

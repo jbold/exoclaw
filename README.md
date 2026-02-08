@@ -100,24 +100,27 @@ The gateway binds to `127.0.0.1:7200` by default. When binding to a non-loopback
 - WASM plugin host -- load, validate, and call plugin functions via Extism
 - Hierarchical session router (peer/guild/team/account/channel bindings)
 - Agent runner with streaming SSE for Anthropic and OpenAI APIs
+- Tool-use loop with WASM sandbox dispatch and streamed `tool_use` / `tool_result` events
+- Config loading from TOML + env with zero-config defaults
+- Token metering and budget enforcement (session/daily/monthly)
+- Memory engine (soul + semantic + episodic) integrated in message context assembly
+- Webhook channel adapter pipeline (`POST /webhook/{channel}`) with host-side proxy allowlists
 - NATS message bus with graceful fallback to local-only mode
 - In-memory session store with conversation history
 - CLI with `gateway`, `plugin`, and `status` subcommands
+- Unit/integration test suites for auth/router/metering/memory/sandbox/channel flows
 
 ### TODO
 
-- [ ] Tool-use loop (agent runner calls tools in WASM sandbox, feeds results back)
 - [ ] Gemini and Ollama provider support
 - [ ] SurrealDB-backed persistent session store
 - [ ] NATS JetStream for message replay and durability
-- [ ] Channel plugins (Telegram, Discord, WhatsApp as `.wasm` modules)
-- [ ] Plugin capability grants (network, filesystem, env var access)
+- [ ] Production channel plugins (Telegram/Discord/WhatsApp)
 - [ ] Plugin SDK and guest-side API
-- [ ] Configuration file support
 - [ ] TLS termination
 - [ ] Metrics and observability (OpenTelemetry)
 - [ ] Multi-agent orchestration
-- [ ] Tests
+- [ ] Performance benchmarks and production hardening
 
 ## Stack
 
@@ -125,7 +128,7 @@ The gateway binds to `127.0.0.1:7200` by default. When binding to a non-loopback
 |---|---|---|
 | Async runtime | `tokio` | Task scheduling, I/O, timers |
 | HTTP / WebSocket | `axum` | Gateway server, WebSocket upgrade |
-| WASM plugins | `extism` | Sandboxed plugin host (Wazero-based) |
+| WASM plugins | `extism` | Sandboxed plugin host (Wasmtime-backed) |
 | Message bus | `async-nats` | Inter-component routing, pub/sub |
 | Storage | `surrealdb` (planned) | Session persistence, agent config |
 | Wire format | `rmp-serde` | MessagePack serialization |

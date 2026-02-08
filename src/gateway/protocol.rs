@@ -6,6 +6,7 @@ use tracing::warn;
 use super::server::AppState;
 use crate::agent::AgentEvent;
 use crate::agent::metering;
+use crate::types::Message as AgentMessage;
 
 #[derive(Deserialize)]
 struct RpcRequest {
@@ -47,6 +48,8 @@ pub enum RpcResult {
     Stream {
         id: String,
         session_key: String,
+        agent_id: String,
+        user_content: String,
         rx: mpsc::Receiver<AgentEvent>,
     },
 }
@@ -157,16 +160,17 @@ async fn handle_chat_send(
         session.message_count += 1;
     }
 
-    // 3. Build message history for LLM
+    // 3. Build message history from memory context + current user message.
+    let user_message = AgentMessage::text("user", params.content.clone());
     let messages = {
-        let store = state.store.read().await;
-        match store.get(&route.session_key) {
-            Some(session) => session.messages.clone(),
-            None => vec![serde_json::json!({
-                "role": "user",
-                "content": params.content,
-            })],
-        }
+        let mut memory = state.memory.write().await;
+        let mut context =
+            memory.assemble_context(&route.session_key, &route.agent_id, &params.content);
+        context.push(user_message);
+        context
+            .into_iter()
+            .filter_map(|m| m.as_provider_message())
+            .collect::<Vec<_>>()
     };
 
     // 4. Budget check before LLM call (T033)
@@ -218,6 +222,8 @@ async fn handle_chat_send(
     let agent_id = route.agent_id.clone();
     let meter_session_key = route.session_key.clone();
     let plugins = Arc::clone(&state.plugins);
+    let budget_config = state.config.budgets.clone();
+    let session_lock = state.session_lock(&route.session_key).await;
 
     // Metering relay: intercepts events to record usage, then forwards to client.
     tokio::spawn(async move {
@@ -228,8 +234,7 @@ async fn handle_chat_send(
                 output_tokens,
             } = &event
             {
-                let counter_mutex =
-                    metering::get_or_init_global(&crate::config::BudgetConfig::default());
+                let counter_mutex = metering::get_or_init_global(&budget_config);
                 let mut counter = counter_mutex.lock().unwrap_or_else(|e| e.into_inner());
                 counter.record_usage(
                     &meter_session_key,
@@ -247,6 +252,9 @@ async fn handle_chat_send(
     });
 
     tokio::spawn(async move {
+        // Serialize all processing for this session across connections.
+        let _session_guard = session_lock.lock().await;
+
         let runner = crate::agent::AgentRunner::new();
         let result = runner
             .run_with_tools(
@@ -278,6 +286,8 @@ async fn handle_chat_send(
     RpcResult::Stream {
         id: request_id,
         session_key: route.session_key,
+        agent_id: route.agent_id,
+        user_content: params.content,
         rx,
     }
 }
