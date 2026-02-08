@@ -1,0 +1,15 @@
+{
+  "name": "exoclaw-e2e",
+  "private": true,
+  "version": "0.1.0",
+  "description": "E2E tests for exoclaw gateway + Leptos UI",
+  "scripts": {
+    "test:e2e": "playwright test",
+    "test:e2e:headed": "playwright test --headed",
+    "test:e2e:debug": "playwright test --debug"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.50.1"
+  }
+}
+

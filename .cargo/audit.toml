@@ -1,0 +1,12 @@
+[advisories]
+ignore = [
+  # extism transitively pins wasmtime 37.x today.
+  "RUSTSEC-2026-0006",
+  # transitive via wasmtime profiling stack
+  "RUSTSEC-2025-0057",
+  # transitive via async-nats / rustls-native-certs
+  "RUSTSEC-2025-0134",
+  # transitive in current leptos dependency graph
+  "RUSTSEC-2024-0436",
+]
+
