@@ -266,20 +266,35 @@ fn detect_plugin_type(plugin: &mut Plugin) -> (PluginType, Option<serde_json::Va
     // Check if the plugin has a `describe()` export
     if let Ok(output) = plugin.call::<&[u8], Vec<u8>>("describe", b"{}") {
         if let Ok(schema) = serde_json::from_slice::<serde_json::Value>(&output) {
+            let declared_type = schema
+                .get("type")
+                .and_then(|v| v.as_str())
+                .or_else(|| schema.get("plugin_type").and_then(|v| v.as_str()));
+
+            if matches!(declared_type, Some("channel_adapter")) {
+                return (PluginType::ChannelAdapter, None);
+            }
+
             return (PluginType::Tool, Some(schema));
         }
     }
 
-    // Check if it has handle_tool_call (tool) or parse_incoming (channel adapter)
+    // Fall back to function probing when describe() is unavailable.
+    if plugin
+        .call::<&[u8], Vec<u8>>("parse_incoming", b"{}")
+        .is_ok()
+        || plugin
+            .call::<&[u8], Vec<u8>>("format_outgoing", br#"{"content":"ok"}"#)
+            .is_ok()
+    {
+        return (PluginType::ChannelAdapter, None);
+    }
+
     if plugin
         .call::<&[u8], Vec<u8>>("handle_tool_call", b"{}")
         .is_ok()
     {
         return (PluginType::Tool, None);
-    }
-
-    if plugin.call::<&[u8], Vec<u8>>("parse_incoming", b"").is_ok() {
-        return (PluginType::ChannelAdapter, None);
     }
 
     // Default to Tool type

@@ -17,18 +17,39 @@ use super::auth;
 use super::protocol::RpcResult;
 use crate::agent::AgentEvent;
 use crate::config::ExoclawConfig;
+use crate::memory::MemoryEngine;
 use crate::router::SessionRouter;
 use crate::sandbox::PluginHost;
 use crate::store::SessionStore;
+use crate::types::Message as AgentMessage;
 
 pub struct AppState {
     pub token: Option<String>,
     pub router: RwLock<SessionRouter>,
     pub plugins: Arc<RwLock<PluginHost>>,
     pub store: RwLock<SessionStore>,
+    pub memory: Arc<RwLock<MemoryEngine>>,
     pub config: ExoclawConfig,
     /// Per-session locks for message serialization (FR-006).
     pub session_locks: RwLock<HashMap<String, Arc<Mutex<()>>>>,
+}
+
+impl AppState {
+    pub async fn session_lock(&self, session_key: &str) -> Arc<Mutex<()>> {
+        {
+            let locks = self.session_locks.read().await;
+            if let Some(lock) = locks.get(session_key) {
+                return Arc::clone(lock);
+            }
+        }
+
+        let mut locks = self.session_locks.write().await;
+        Arc::clone(
+            locks
+                .entry(session_key.to_string())
+                .or_insert_with(|| Arc::new(Mutex::new(()))),
+        )
+    }
 }
 
 pub async fn run(config: ExoclawConfig, token: Option<String>) -> anyhow::Result<()> {
@@ -40,6 +61,8 @@ pub async fn run(config: ExoclawConfig, token: Option<String>) -> anyhow::Result
              Set --token or EXOCLAW_TOKEN env var."
         );
     }
+
+    crate::agent::metering::init_global(&config.budgets);
 
     // Populate router with bindings from config
     let mut router = SessionRouter::new();
@@ -72,6 +95,16 @@ pub async fn run(config: ExoclawConfig, token: Option<String>) -> anyhow::Result
     }
     info!(plugins = plugin_host.count(), "plugins loaded");
 
+    let mut memory = MemoryEngine::new(
+        config.memory.episodic_window as usize,
+        config.memory.semantic_enabled,
+    );
+    if let Some(path) = config.agent.soul_path.as_deref() {
+        if let Err(e) = memory.soul.load(&config.agent.id, path) {
+            warn!(agent = %config.agent.id, path, "failed to load soul: {e}");
+        }
+    }
+
     let addr = format!("{}:{}", config.gateway.bind, config.gateway.port);
 
     let state = Arc::new(AppState {
@@ -79,6 +112,7 @@ pub async fn run(config: ExoclawConfig, token: Option<String>) -> anyhow::Result
         router: RwLock::new(router),
         plugins: Arc::new(RwLock::new(plugin_host)),
         store: RwLock::new(SessionStore::new()),
+        memory: Arc::new(RwLock::new(memory)),
         config,
         session_locks: RwLock::new(HashMap::new()),
     });
@@ -111,20 +145,22 @@ async fn ws_handler(ws: WebSocketUpgrade, State(state): State<Arc<AppState>>) ->
 }
 
 async fn handle_connection(mut socket: WebSocket, state: Arc<AppState>) {
-    // First message must be auth
-    let authed = match socket.recv().await {
-        Some(Ok(Message::Text(msg))) => auth::verify_connect(&msg, &state.token),
-        _ => false,
-    };
+    if state.token.is_some() {
+        // First message must be auth when token auth is enabled.
+        let authed = match socket.recv().await {
+            Some(Ok(Message::Text(msg))) => auth::verify_connect(&msg, &state.token),
+            _ => false,
+        };
 
-    if !authed {
-        let _ = socket
-            .send(Message::Text(
-                r#"{"error":"auth_failed","code":4001}"#.into(),
-            ))
-            .await;
-        let _ = socket.close().await;
-        return;
+        if !authed {
+            let _ = socket
+                .send(Message::Text(
+                    r#"{"error":"auth_failed","code":4001}"#.into(),
+                ))
+                .await;
+            let _ = socket.close().await;
+            return;
+        }
     }
 
     let _ = socket
@@ -145,6 +181,8 @@ async fn handle_connection(mut socket: WebSocket, state: Arc<AppState>) {
                     RpcResult::Stream {
                         id,
                         session_key,
+                        agent_id: _agent_id,
+                        user_content,
                         mut rx,
                     } => {
                         // Stream AgentEvents as JSON frames to the client
@@ -231,9 +269,20 @@ async fn handle_connection(mut socket: WebSocket, state: Arc<AppState>) {
                                     if let Some(session) = store.get_mut(&session_key) {
                                         session.messages.push(serde_json::json!({
                                             "role": "assistant",
-                                            "content": assistant_text,
+                                            "content": assistant_text.clone(),
                                         }));
                                     }
+
+                                    let mut memory = state.memory.write().await;
+                                    let user_message =
+                                        AgentMessage::text("user", user_content.clone());
+                                    let assistant_message =
+                                        AgentMessage::text("assistant", assistant_text.clone());
+                                    memory.process_response(
+                                        &session_key,
+                                        &user_message,
+                                        &assistant_message,
+                                    );
                                 }
                                 break;
                             }
@@ -325,6 +374,8 @@ async fn webhook_handler(
         return (StatusCode::BAD_REQUEST, "empty message content".to_string());
     }
 
+    let user_message = AgentMessage::text("user", content.clone());
+
     // 3. Route to agent
     let route = {
         let mut router = state.router.write().await;
@@ -337,24 +388,29 @@ async fn webhook_handler(
         )
     };
 
+    let session_lock = state.session_lock(&route.session_key).await;
+    let _session_guard = session_lock.lock().await;
+
     // 4. Get/create session and append user message
     {
         let mut store = state.store.write().await;
         let session = store.get_or_create(&route.session_key, &route.agent_id);
         session.messages.push(serde_json::json!({
             "role": "user",
-            "content": content,
+            "content": content.clone(),
         }));
         session.message_count += 1;
     }
 
-    // 5. Build message history
+    // 5. Build message history using memory engine context
     let messages = {
-        let store = state.store.read().await;
-        match store.get(&route.session_key) {
-            Some(session) => session.messages.clone(),
-            None => vec![serde_json::json!({"role": "user", "content": content})],
-        }
+        let mut memory = state.memory.write().await;
+        let mut context = memory.assemble_context(&route.session_key, &route.agent_id, &content);
+        context.push(user_message.clone());
+        context
+            .into_iter()
+            .filter_map(|m| m.as_provider_message())
+            .collect::<Vec<_>>()
     };
 
     // 6. Create provider and run agent synchronously (collect full response)
@@ -425,10 +481,14 @@ async fn webhook_handler(
         if let Some(session) = store.get_mut(&route.session_key) {
             session.messages.push(serde_json::json!({
                 "role": "assistant",
-                "content": response_text,
+                "content": response_text.clone(),
             }));
             session.message_count += 1;
         }
+
+        let mut memory = state.memory.write().await;
+        let assistant_message = AgentMessage::text("assistant", response_text.clone());
+        memory.process_response(&route.session_key, &user_message, &assistant_message);
     }
 
     // 9. Format outgoing via channel adapter plugin

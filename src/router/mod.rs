@@ -26,7 +26,6 @@ pub struct Binding {
 }
 
 struct SessionState {
-    agent_id: String,
     message_count: u64,
 }
 
@@ -124,10 +123,7 @@ impl SessionRouter {
         self.sessions
             .entry(session_key.clone())
             .and_modify(|s| s.message_count += 1)
-            .or_insert(SessionState {
-                agent_id: agent_id.clone(),
-                message_count: 1,
-            });
+            .or_insert(SessionState { message_count: 1 });
 
         RouteResult {
             agent_id: agent_id.clone(),

@@ -5,7 +5,7 @@
 
 ## Overview
 
-Exoclaw communicates over WebSocket using a JSON-RPC-inspired protocol. The connection lifecycle is: connect → authenticate → send/receive JSON-RPC messages → close.
+Exoclaw communicates over WebSocket using a JSON-RPC-inspired protocol. The connection lifecycle is: connect → optional authenticate → receive hello → send/receive JSON-RPC messages → close.
 
 This is **not strict JSON-RPC 2.0** — it omits `jsonrpc: "2.0"` and uses a simplified error model. The protocol is designed for simplicity and WebSocket streaming.
 
@@ -18,13 +18,14 @@ Client                              Gateway
   │                                    │
   │◄─── 101 Switching Protocols ──────┤
   │                                    │
-  ├──── {"token": "secret"} ──────────►│  (1) Auth message (first message)
-  │                                    │      Skip if loopback bind
+  ├──── {"token": "secret"} ──────────►│  (1) Auth message (required if token auth enabled)
   │                                    │
-  ├──── {"id":"1","method":"ping"} ───►│  (2) RPC messages
+  │◄─── {"ok":true,"version":"0.1.0"} ┤  (2) Hello frame
+  │                                    │
+  ├──── {"id":"1","method":"ping"} ───►│  (3) RPC messages
   │◄─── {"id":"1","result":"pong"} ───┤
   │                                    │
-  ├──── {"id":"2","method":"chat.send",│  (3) Streaming RPC
+  ├──── {"id":"2","method":"chat.send",│  (4) Streaming RPC
   │      "params":{...}} ─────────────►│
   │◄─── {"id":"2","event":"text", ────┤      Response chunks
   │       "data":"Hello"} ────────────┤
@@ -32,7 +33,7 @@ Client                              Gateway
   │       "data":" world"} ───────────┤
   │◄─── {"id":"2","event":"done"} ────┤      Completion signal
   │                                    │
-  ├──── WebSocket close ──────────────►│  (4) Disconnect
+  ├──── WebSocket close ──────────────►│  (5) Disconnect
   └────────────────────────────────────┘
 ```
 
@@ -46,15 +47,21 @@ The **first message** after WebSocket upgrade MUST be an authentication payload:
 {"token": "your-auth-token"}
 ```
 
-The gateway compares the token using constant-time comparison (`subtle::ConstantTimeEq`). On failure, the connection is closed immediately with a WebSocket close frame.
+The gateway compares the token using constant-time comparison (`subtle::ConstantTimeEq`). On failure, it sends:
+
+```json
+{"error":"auth_failed","code":4001}
+```
+
+then closes the socket.
 
 **Source**: `src/gateway/auth.rs`, spec FR-002
 
 ### Loopback Bind (127.0.0.1)
 
-Authentication is skipped entirely. No token message is required. The first message can be an RPC request.
+Authentication is skipped entirely. No token message is required.
 
-**Source**: `src/gateway/auth.rs:verify_connect()` returns `true` if no token configured
+**Source**: `src/gateway/server.rs` + `src/gateway/auth.rs`
 
 ## Request Format
 
@@ -130,7 +137,7 @@ Health check. Returns immediately.
 {"id": "1", "result": "pong"}
 ```
 
-**Existing code**: `src/gateway/protocol.rs:40-44`
+**Existing code**: Implemented in `src/gateway/protocol.rs`
 
 ---
 
@@ -158,7 +165,7 @@ Returns gateway status information.
 | `plugins` | number | Number of loaded plugins |
 | `sessions` | number | Number of active sessions |
 
-**Existing code**: `src/gateway/protocol.rs:46-53`
+**Existing code**: Implemented in `src/gateway/protocol.rs`
 
 ---
 
@@ -206,7 +213,7 @@ Send a message and receive a streamed AI response.
 - Budget exceeded: `{"error": "token budget exceeded (session: 9500/10000)"}`
 - LLM provider unreachable: `{"error": "provider error: connection refused"}`
 
-**Existing code**: `src/gateway/protocol.rs:56-62` (stub returning `{"queued": true}`)
+**Existing code**: Implemented in `src/gateway/protocol.rs` and streamed by `src/gateway/server.rs`
 
 ---
 
@@ -227,7 +234,7 @@ List all loaded plugins.
 }
 ```
 
-**Existing code**: `src/gateway/protocol.rs:64-71`
+**Existing code**: Implemented in `src/gateway/protocol.rs`
 
 ---
 

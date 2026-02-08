@@ -56,6 +56,15 @@ subtle = "2"
 
 [dev-dependencies]
 tokio-test = "0.4"
+criterion = "0.5"
+
+[[bench]]
+name = "router_bench"
+harness = false
+
+[[bench]]
+name = "sandbox_bench"
+harness = false
 
 [profile.release]
 lto = true
