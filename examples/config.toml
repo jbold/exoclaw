@@ -13,6 +13,7 @@ provider = "anthropic"                  # "anthropic" | "openai"
 model = "claude-sonnet-4-5-20250929"    # model identifier
 max_tokens = 4096                       # max tokens per LLM response
 # api_key: set via ANTHROPIC_API_KEY or OPENAI_API_KEY env var
+#          or run `exoclaw onboard` to save key in ~/.exoclaw/credentials/{provider}.key
 # system_prompt = "You are a helpful assistant."
 # soul_path = "~/.exoclaw/soul.md"      # personality document (~500 tokens)
 # tools = ["echo", "web-search"]        # plugin names this agent can use

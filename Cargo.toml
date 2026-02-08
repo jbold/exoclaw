@@ -1,3 +1,6 @@
+[workspace]
+members = [".", "ui"]
+
 [package]
 name = "exoclaw"
 version = "0.1.0"
@@ -34,6 +37,7 @@ async-nats = "0.38"
 
 # CLI
 clap = { version = "4", features = ["derive", "env"] }
+rpassword = "7"
 
 # Logging
 tracing = "0.1"
@@ -44,6 +48,10 @@ async-trait = "0.1"
 
 # URL parsing (for webhook proxy host validation)
 url = "2"
+
+# Embedded static assets (serves UI WASM bundle)
+rust-embed = { version = "8", features = ["mime-guess"] }
+mime_guess = "2"
 
 # Utilities
 uuid = { version = "1", features = ["v4"] }

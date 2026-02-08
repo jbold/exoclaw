@@ -8,10 +8,15 @@ use axum::{
     routing::{get, post},
 };
 use futures::SinkExt;
+use rust_embed::Embed;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
 use tracing::{info, warn};
+
+#[derive(Embed)]
+#[folder = "ui/dist/"]
+struct UiAssets;
 
 use super::auth;
 use super::protocol::RpcResult;
@@ -105,6 +110,12 @@ pub async fn run(config: ExoclawConfig, token: Option<String>) -> anyhow::Result
         }
     }
 
+    if config.agent.api_key.is_none() {
+        warn!(
+            "no API key configured — run 'exoclaw onboard' or set ANTHROPIC_API_KEY/OPENAI_API_KEY"
+        );
+    }
+
     let addr = format!("{}:{}", config.gateway.bind, config.gateway.port);
 
     let state = Arc::new(AppState {
@@ -121,6 +132,7 @@ pub async fn run(config: ExoclawConfig, token: Option<String>) -> anyhow::Result
         .route("/ws", get(ws_handler))
         .route("/health", get(health))
         .route("/webhook/{channel}", post(webhook_handler))
+        .fallback(get(ui_handler))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(&addr).await?;
@@ -138,6 +150,36 @@ pub async fn run(config: ExoclawConfig, token: Option<String>) -> anyhow::Result
 
 async fn health() -> &'static str {
     "ok"
+}
+
+async fn ui_handler(uri: axum::http::Uri) -> impl IntoResponse {
+    let path = uri.path().trim_start_matches('/');
+    // Serve index.html for root path or unknown paths (SPA routing)
+    let path = if path.is_empty() { "index.html" } else { path };
+
+    match UiAssets::get(path) {
+        Some(file) => {
+            let mime = mime_guess::from_path(path).first_or_octet_stream();
+            (
+                StatusCode::OK,
+                [(axum::http::header::CONTENT_TYPE, mime.as_ref())],
+                file.data.to_vec(),
+            )
+                .into_response()
+        }
+        None => {
+            // SPA fallback: serve index.html for unmatched paths
+            match UiAssets::get("index.html") {
+                Some(file) => (
+                    StatusCode::OK,
+                    [(axum::http::header::CONTENT_TYPE, "text/html")],
+                    file.data.to_vec(),
+                )
+                    .into_response(),
+                None => (StatusCode::NOT_FOUND, "UI not available").into_response(),
+            }
+        }
+    }
 }
 
 async fn ws_handler(ws: WebSocketUpgrade, State(state): State<Arc<AppState>>) -> impl IntoResponse {
