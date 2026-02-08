@@ -1,8 +1,8 @@
+mod agent;
+mod bus;
 mod gateway;
 mod router;
 mod sandbox;
-mod agent;
-mod bus;
 mod store;
 
 use clap::{Parser, Subcommand};
@@ -72,9 +72,7 @@ async fn main() -> anyhow::Result<()> {
                 println!("No plugins loaded.");
                 Ok(())
             }
-            PluginAction::Load { path } => {
-                sandbox::load_plugin(&path).await
-            }
+            PluginAction::Load { path } => sandbox::load_plugin(&path).await,
         },
         Commands::Status => {
             println!("exoclaw v{}", env!("CARGO_PKG_VERSION"));

@@ -1,5 +1,5 @@
-use std::sync::Arc;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use tracing::warn;
 
 use super::server::AppState;
@@ -27,14 +27,12 @@ pub async fn handle_rpc(msg: &str, state: &Arc<AppState>) -> Option<String> {
         Ok(r) => r,
         Err(e) => {
             warn!("malformed rpc: {e}");
-            return Some(
-                serde_json::to_string(&RpcResponse {
+            return serde_json::to_string(&RpcResponse {
                     id: "0".into(),
                     result: None,
                     error: Some(format!("parse error: {e}")),
                 })
-                .ok()?,
-            );
+                .ok();
         }
     };
 

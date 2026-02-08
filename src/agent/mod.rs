@@ -2,7 +2,7 @@ use futures::StreamExt;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use tokio::sync::mpsc;
-use tracing::{info, warn};
+use tracing::info;
 
 /// Minimal LLM agent runner. Calls provider APIs with tool support.
 ///
@@ -16,8 +16,8 @@ pub struct AgentRunner {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentConfig {
-    pub provider: String,      // "anthropic", "openai"
-    pub model: String,         // "claude-sonnet-4-5-20250929", "gpt-4o"
+    pub provider: String, // "anthropic", "openai"
+    pub model: String,    // "claude-sonnet-4-5-20250929", "gpt-4o"
     pub api_key: String,
     pub max_tokens: u32,
 }
@@ -32,7 +32,11 @@ struct ChatMessage {
 #[derive(Debug)]
 pub enum AgentEvent {
     Text(String),
-    ToolUse { id: String, name: String, input: serde_json::Value },
+    ToolUse {
+        id: String,
+        name: String,
+        input: serde_json::Value,
+    },
     Done,
     Error(String),
 }
@@ -57,7 +61,9 @@ impl AgentRunner {
             "anthropic" => self.run_anthropic(config, messages, tx).await,
             "openai" => self.run_openai(config, messages, tx).await,
             other => {
-                let _ = tx.send(AgentEvent::Error(format!("unknown provider: {other}"))).await;
+                let _ = tx
+                    .send(AgentEvent::Error(format!("unknown provider: {other}")))
+                    .await;
                 Ok(())
             }
         }
@@ -89,7 +95,9 @@ impl AgentRunner {
         if !response.status().is_success() {
             let status = response.status();
             let text = response.text().await.unwrap_or_default();
-            let _ = tx.send(AgentEvent::Error(format!("{status}: {text}"))).await;
+            let _ = tx
+                .send(AgentEvent::Error(format!("{status}: {text}")))
+                .await;
             return Ok(());
         }
 
@@ -151,7 +159,9 @@ impl AgentRunner {
         if !response.status().is_success() {
             let status = response.status();
             let text = response.text().await.unwrap_or_default();
-            let _ = tx.send(AgentEvent::Error(format!("{status}: {text}"))).await;
+            let _ = tx
+                .send(AgentEvent::Error(format!("{status}: {text}")))
+                .await;
             return Ok(());
         }
 
