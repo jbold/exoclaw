@@ -56,7 +56,14 @@ pub async fn run(config: ExoclawConfig, token: Option<String>) -> anyhow::Result
     // Load plugins from config (skip missing files with warning)
     let mut plugin_host = PluginHost::new();
     for plugin_cfg in &config.plugins {
-        match plugin_host.register(&plugin_cfg.name, &plugin_cfg.path) {
+        let caps = match crate::sandbox::capabilities::parse_all(&plugin_cfg.capabilities) {
+            Ok(c) => c,
+            Err(e) => {
+                warn!(plugin = %plugin_cfg.name, "skipping plugin (bad capabilities): {e}");
+                continue;
+            }
+        };
+        match plugin_host.register(&plugin_cfg.name, &plugin_cfg.path, caps) {
             Ok(()) => {}
             Err(e) => warn!(plugin = %plugin_cfg.name, "skipping plugin: {e}"),
         }
@@ -96,10 +103,7 @@ async fn health() -> &'static str {
     "ok"
 }
 
-async fn ws_handler(
-    ws: WebSocketUpgrade,
-    State(state): State<Arc<AppState>>,
-) -> impl IntoResponse {
+async fn ws_handler(ws: WebSocketUpgrade, State(state): State<Arc<AppState>>) -> impl IntoResponse {
     ws.on_upgrade(move |socket| handle_connection(socket, state))
 }
 
@@ -135,7 +139,11 @@ async fn handle_connection(mut socket: WebSocket, state: Arc<AppState>) {
                     RpcResult::Response(resp) => {
                         let _ = socket.send(Message::Text(resp.into())).await;
                     }
-                    RpcResult::Stream { id, session_key, mut rx } => {
+                    RpcResult::Stream {
+                        id,
+                        session_key,
+                        mut rx,
+                    } => {
                         // Stream AgentEvents as JSON frames to the client
                         let mut assistant_text = String::new();
                         while let Some(event) = rx.recv().await {
@@ -148,7 +156,11 @@ async fn handle_connection(mut socket: WebSocket, state: Arc<AppState>) {
                                         "data": text,
                                     })
                                 }
-                                AgentEvent::ToolUse { id: call_id, name, input } => {
+                                AgentEvent::ToolUse {
+                                    id: call_id,
+                                    name,
+                                    input,
+                                } => {
                                     serde_json::json!({
                                         "id": id,
                                         "event": "tool_use",
@@ -159,7 +171,11 @@ async fn handle_connection(mut socket: WebSocket, state: Arc<AppState>) {
                                         },
                                     })
                                 }
-                                AgentEvent::ToolResult { tool_use_id, content, is_error } => {
+                                AgentEvent::ToolResult {
+                                    tool_use_id,
+                                    content,
+                                    is_error,
+                                } => {
                                     serde_json::json!({
                                         "id": id,
                                         "event": "tool_result",
@@ -170,7 +186,10 @@ async fn handle_connection(mut socket: WebSocket, state: Arc<AppState>) {
                                         },
                                     })
                                 }
-                                AgentEvent::Usage { input_tokens, output_tokens } => {
+                                AgentEvent::Usage {
+                                    input_tokens,
+                                    output_tokens,
+                                } => {
                                     serde_json::json!({
                                         "id": id,
                                         "event": "usage",

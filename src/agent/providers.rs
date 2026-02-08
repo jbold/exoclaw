@@ -122,10 +122,7 @@ impl LlmProvider for AnthropicProvider {
                 match event_type.as_str() {
                     "message_start" => {
                         // Extract usage from message_start
-                        if let Some(usage) = parsed
-                            .get("message")
-                            .and_then(|m| m.get("usage"))
-                        {
+                        if let Some(usage) = parsed.get("message").and_then(|m| m.get("usage")) {
                             if let Some(it) = usage.get("input_tokens").and_then(|v| v.as_u64()) {
                                 input_tokens = it as u32;
                             }
@@ -155,9 +152,7 @@ impl LlmProvider for AnthropicProvider {
                             let delta_type = delta.get("type").and_then(|t| t.as_str());
                             match delta_type {
                                 Some("text_delta") => {
-                                    if let Some(text) =
-                                        delta.get("text").and_then(|t| t.as_str())
-                                    {
+                                    if let Some(text) = delta.get("text").and_then(|t| t.as_str()) {
                                         let _ = tx.send(AgentEvent::Text(text.into())).await;
                                     }
                                 }
@@ -331,9 +326,7 @@ impl LlmProvider for OpenAiProvider {
                         if let Some(it) = usage.get("prompt_tokens").and_then(|v| v.as_u64()) {
                             input_tokens = it as u32;
                         }
-                        if let Some(ot) =
-                            usage.get("completion_tokens").and_then(|v| v.as_u64())
-                        {
+                        if let Some(ot) = usage.get("completion_tokens").and_then(|v| v.as_u64()) {
                             output_tokens = ot as u32;
                         }
                     }
@@ -341,9 +334,8 @@ impl LlmProvider for OpenAiProvider {
                     if let Some(choices) = parsed.get("choices").and_then(|c| c.as_array()) {
                         if let Some(choice) = choices.first() {
                             let delta = choice.get("delta");
-                            let finish_reason = choice
-                                .get("finish_reason")
-                                .and_then(|f| f.as_str());
+                            let finish_reason =
+                                choice.get("finish_reason").and_then(|f| f.as_str());
 
                             // Handle text content
                             if let Some(text) = delta
@@ -362,9 +354,9 @@ impl LlmProvider for OpenAiProvider {
                                     let index =
                                         tc.get("index").and_then(|i| i.as_u64()).unwrap_or(0)
                                             as usize;
-                                    let entry = tool_calls
-                                        .entry(index)
-                                        .or_insert_with(|| (String::new(), String::new(), String::new()));
+                                    let entry = tool_calls.entry(index).or_insert_with(|| {
+                                        (String::new(), String::new(), String::new())
+                                    });
 
                                     if let Some(id) = tc.get("id").and_then(|v| v.as_str()) {
                                         entry.0 = id.to_string();
@@ -390,13 +382,12 @@ impl LlmProvider for OpenAiProvider {
                                 indices.sort();
                                 for idx in indices {
                                     if let Some((id, name, args)) = tool_calls.remove(&idx) {
-                                        let input: serde_json::Value =
-                                            serde_json::from_str(&args).unwrap_or(
-                                                serde_json::Value::Object(Default::default()),
-                                            );
-                                        let _ = tx
-                                            .send(AgentEvent::ToolUse { id, name, input })
-                                            .await;
+                                        let input: serde_json::Value = serde_json::from_str(&args)
+                                            .unwrap_or(serde_json::Value::Object(
+                                                Default::default(),
+                                            ));
+                                        let _ =
+                                            tx.send(AgentEvent::ToolUse { id, name, input }).await;
                                     }
                                 }
                             }
@@ -419,10 +410,8 @@ impl LlmProvider for OpenAiProvider {
 
 /// Create a provider from config.
 pub fn from_config(config: &crate::config::AgentDefConfig) -> anyhow::Result<Box<dyn LlmProvider>> {
-    let api_key = config
-        .api_key
-        .clone()
-        .ok_or_else(|| anyhow::anyhow!(
+    let api_key = config.api_key.clone().ok_or_else(|| {
+        anyhow::anyhow!(
             "no API key for provider '{}'. Set {} env var.",
             config.provider,
             match config.provider.as_str() {
@@ -430,7 +419,8 @@ pub fn from_config(config: &crate::config::AgentDefConfig) -> anyhow::Result<Box
                 "openai" => "OPENAI_API_KEY",
                 _ => "the appropriate API key",
             }
-        ))?;
+        )
+    })?;
 
     match config.provider.as_str() {
         "anthropic" => Ok(Box::new(AnthropicProvider::new(
@@ -444,5 +434,60 @@ pub fn from_config(config: &crate::config::AgentDefConfig) -> anyhow::Result<Box
             config.max_tokens,
         ))),
         other => anyhow::bail!("unknown provider: {other}"),
+    }
+}
+
+/// Build tool schemas for the Anthropic API from plugin describe() output.
+///
+/// Anthropic format:
+/// ```json
+/// { "name": "echo", "description": "...", "input_schema": { "type": "object", ... } }
+/// ```
+pub fn build_anthropic_tools(schemas: &[serde_json::Value]) -> Vec<serde_json::Value> {
+    schemas
+        .iter()
+        .map(|schema| {
+            serde_json::json!({
+                "name": schema.get("name").and_then(|n| n.as_str()).unwrap_or("unknown"),
+                "description": schema.get("description").and_then(|d| d.as_str()).unwrap_or(""),
+                "input_schema": schema.get("input_schema").cloned()
+                    .unwrap_or_else(|| serde_json::json!({"type": "object", "properties": {}})),
+            })
+        })
+        .collect()
+}
+
+/// Build tool schemas for the OpenAI API from plugin describe() output.
+///
+/// OpenAI format:
+/// ```json
+/// { "type": "function", "function": { "name": "echo", "description": "...", "parameters": { ... } } }
+/// ```
+pub fn build_openai_tools(schemas: &[serde_json::Value]) -> Vec<serde_json::Value> {
+    schemas
+        .iter()
+        .map(|schema| {
+            serde_json::json!({
+                "type": "function",
+                "function": {
+                    "name": schema.get("name").and_then(|n| n.as_str()).unwrap_or("unknown"),
+                    "description": schema.get("description").and_then(|d| d.as_str()).unwrap_or(""),
+                    "parameters": schema.get("input_schema").cloned()
+                        .unwrap_or_else(|| serde_json::json!({"type": "object", "properties": {}})),
+                }
+            })
+        })
+        .collect()
+}
+
+/// Build tool schemas in the right format for a given provider.
+pub fn build_tools_for_provider(
+    provider: &str,
+    schemas: &[serde_json::Value],
+) -> Vec<serde_json::Value> {
+    match provider {
+        "anthropic" => build_anthropic_tools(schemas),
+        "openai" => build_openai_tools(schemas),
+        _ => build_anthropic_tools(schemas), // default to Anthropic format
     }
 }

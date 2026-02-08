@@ -5,6 +5,7 @@ use tracing::warn;
 
 use super::server::AppState;
 use crate::agent::AgentEvent;
+use crate::agent::metering;
 
 #[derive(Deserialize)]
 struct RpcRequest {
@@ -99,9 +100,7 @@ pub async fn handle_rpc(msg: &str, state: &Arc<AppState>) -> RpcResult {
                         result: None,
                         error: Some(format!("invalid chat.send params: {e}")),
                     };
-                    return RpcResult::Response(
-                        serde_json::to_string(&resp).unwrap_or_default(),
-                    );
+                    return RpcResult::Response(serde_json::to_string(&resp).unwrap_or_default());
                 }
             };
 
@@ -170,7 +169,22 @@ async fn handle_chat_send(
         }
     };
 
-    // 4. Create provider from config
+    // 4. Budget check before LLM call (T033)
+    {
+        let counter_mutex = metering::get_or_init_global(&state.config.budgets);
+        let estimated = metering::estimate_input_tokens(&messages);
+        let mut counter = counter_mutex.lock().unwrap_or_else(|e| e.into_inner());
+        if let Err(exceeded) = counter.check_budget(&route.session_key, estimated) {
+            let resp = RpcResponse {
+                id: request_id,
+                result: None,
+                error: Some(exceeded.to_string()),
+            };
+            return RpcResult::Response(serde_json::to_string(&resp).unwrap_or_default());
+        }
+    }
+
+    // 5. Create provider from config
     let provider = match crate::agent::providers::from_config(&state.config.agent) {
         Ok(p) => p,
         Err(e) => {
@@ -183,20 +197,73 @@ async fn handle_chat_send(
         }
     };
 
-    // 5. Spawn agent task and return stream
+    // 6. Build tool schemas from loaded plugins
+    let tool_schemas = {
+        let plugin_host = state.plugins.read().await;
+        let raw_schemas = plugin_host.tool_schemas();
+        crate::agent::providers::build_tools_for_provider(
+            &state.config.agent.provider,
+            &raw_schemas,
+        )
+    };
+
+    // 7. Spawn agent task and return stream
     let (tx, rx) = mpsc::channel::<AgentEvent>(32);
+    let (meter_tx, mut meter_rx) = mpsc::channel::<AgentEvent>(32);
     let session_key = route.session_key.clone();
     let state_clone = Arc::clone(state);
     let system_prompt = state.config.agent.system_prompt.clone();
+    let agent_provider = state.config.agent.provider.clone();
+    let agent_model = state.config.agent.model.clone();
+    let agent_id = route.agent_id.clone();
+    let meter_session_key = route.session_key.clone();
+    let plugins = Arc::clone(&state.plugins);
+
+    // Metering relay: intercepts events to record usage, then forwards to client.
+    tokio::spawn(async move {
+        while let Some(event) = meter_rx.recv().await {
+            // Record usage when we see a Usage event (T031/T033)
+            if let AgentEvent::Usage {
+                input_tokens,
+                output_tokens,
+            } = &event
+            {
+                let counter_mutex =
+                    metering::get_or_init_global(&crate::config::BudgetConfig::default());
+                let mut counter = counter_mutex.lock().unwrap_or_else(|e| e.into_inner());
+                counter.record_usage(
+                    &meter_session_key,
+                    &agent_id,
+                    &agent_provider,
+                    &agent_model,
+                    *input_tokens,
+                    *output_tokens,
+                );
+            }
+            if tx.send(event).await.is_err() {
+                break;
+            }
+        }
+    });
 
     tokio::spawn(async move {
-        let result = provider
-            .call_streaming(&messages, &[], system_prompt.as_deref(), tx.clone())
+        let runner = crate::agent::AgentRunner::new();
+        let result = runner
+            .run_with_tools(
+                provider.as_ref(),
+                messages,
+                &tool_schemas,
+                system_prompt.as_deref(),
+                &plugins,
+                meter_tx.clone(),
+            )
             .await;
 
         if let Err(e) = result {
-            let _ = tx.send(AgentEvent::Error(format!("provider error: {e}"))).await;
-            let _ = tx.send(AgentEvent::Done).await;
+            let _ = meter_tx
+                .send(AgentEvent::Error(format!("provider error: {e}")))
+                .await;
+            let _ = meter_tx.send(AgentEvent::Done).await;
         }
 
         // Collect assistant response text and append to session

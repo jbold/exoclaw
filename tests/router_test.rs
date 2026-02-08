@@ -21,8 +21,22 @@ fn make_binding(
 #[test]
 fn peer_binding_highest_priority() {
     let mut router = SessionRouter::new();
-    router.add_binding(make_binding("channel-agent", Some("telegram"), None, None, None, None));
-    router.add_binding(make_binding("peer-agent", None, None, Some("user-42"), None, None));
+    router.add_binding(make_binding(
+        "channel-agent",
+        Some("telegram"),
+        None,
+        None,
+        None,
+        None,
+    ));
+    router.add_binding(make_binding(
+        "peer-agent",
+        None,
+        None,
+        Some("user-42"),
+        None,
+        None,
+    ));
 
     let result = router.resolve("telegram", "acct", Some("user-42"), None, None);
     assert_eq!(result.agent_id, "peer-agent");
@@ -32,8 +46,22 @@ fn peer_binding_highest_priority() {
 #[test]
 fn guild_binding_before_channel() {
     let mut router = SessionRouter::new();
-    router.add_binding(make_binding("channel-agent", Some("discord"), None, None, None, None));
-    router.add_binding(make_binding("guild-agent", None, None, None, Some("server-1"), None));
+    router.add_binding(make_binding(
+        "channel-agent",
+        Some("discord"),
+        None,
+        None,
+        None,
+        None,
+    ));
+    router.add_binding(make_binding(
+        "guild-agent",
+        None,
+        None,
+        None,
+        Some("server-1"),
+        None,
+    ));
 
     let result = router.resolve("discord", "acct", None, Some("server-1"), None);
     assert_eq!(result.agent_id, "guild-agent");
@@ -43,8 +71,22 @@ fn guild_binding_before_channel() {
 #[test]
 fn team_binding_before_account() {
     let mut router = SessionRouter::new();
-    router.add_binding(make_binding("account-agent", None, Some("acct1"), None, None, None));
-    router.add_binding(make_binding("team-agent", None, None, None, None, Some("team-a")));
+    router.add_binding(make_binding(
+        "account-agent",
+        None,
+        Some("acct1"),
+        None,
+        None,
+        None,
+    ));
+    router.add_binding(make_binding(
+        "team-agent",
+        None,
+        None,
+        None,
+        None,
+        Some("team-a"),
+    ));
 
     let result = router.resolve("slack", "acct1", None, None, Some("team-a"));
     assert_eq!(result.agent_id, "team-agent");
@@ -54,8 +96,22 @@ fn team_binding_before_account() {
 #[test]
 fn account_binding_before_channel() {
     let mut router = SessionRouter::new();
-    router.add_binding(make_binding("channel-agent", Some("telegram"), None, None, None, None));
-    router.add_binding(make_binding("account-agent", None, Some("user-1"), None, None, None));
+    router.add_binding(make_binding(
+        "channel-agent",
+        Some("telegram"),
+        None,
+        None,
+        None,
+        None,
+    ));
+    router.add_binding(make_binding(
+        "account-agent",
+        None,
+        Some("user-1"),
+        None,
+        None,
+        None,
+    ));
 
     let result = router.resolve("telegram", "user-1", None, None, None);
     assert_eq!(result.agent_id, "account-agent");
@@ -65,7 +121,14 @@ fn account_binding_before_channel() {
 #[test]
 fn channel_binding_before_default() {
     let mut router = SessionRouter::new();
-    router.add_binding(make_binding("ws-agent", Some("websocket"), None, None, None, None));
+    router.add_binding(make_binding(
+        "ws-agent",
+        Some("websocket"),
+        None,
+        None,
+        None,
+        None,
+    ));
 
     let result = router.resolve("websocket", "me", None, None, None);
     assert_eq!(result.agent_id, "ws-agent");

@@ -14,6 +14,8 @@ pub struct ExoclawConfig {
     pub bindings: Vec<BindingConfig>,
     #[serde(default)]
     pub budgets: BudgetConfig,
+    #[serde(default)]
+    pub memory: MemoryConfig,
 }
 
 impl Default for ExoclawConfig {
@@ -24,6 +26,7 @@ impl Default for ExoclawConfig {
             plugins: Vec::new(),
             bindings: Vec::new(),
             budgets: BudgetConfig::default(),
+            memory: MemoryConfig::default(),
         }
     }
 }
@@ -122,6 +125,30 @@ pub struct BudgetConfig {
     pub session: Option<u64>,
     pub daily: Option<u64>,
     pub monthly: Option<u64>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct MemoryConfig {
+    #[serde(default = "default_episodic_window")]
+    pub episodic_window: u32,
+    #[serde(default = "default_semantic_enabled")]
+    pub semantic_enabled: bool,
+}
+
+impl Default for MemoryConfig {
+    fn default() -> Self {
+        Self {
+            episodic_window: default_episodic_window(),
+            semantic_enabled: default_semantic_enabled(),
+        }
+    }
+}
+
+fn default_episodic_window() -> u32 {
+    5
+}
+fn default_semantic_enabled() -> bool {
+    true
 }
 
 /// Load configuration from file or use defaults.
