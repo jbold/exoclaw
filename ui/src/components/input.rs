@@ -23,9 +23,11 @@ pub fn MessageInput() -> impl IntoView {
             let conn = ws::connect(token).await;
             match conn {
                 Ok(mut conn) => {
+                    state.is_connected.set(true);
                     if let Err(e) = ws::send_chat(&mut conn.write, &content, 1).await {
                         state.add_error(e);
                         state.is_streaming.set(false);
+                        state.is_connected.set(false);
                         return;
                     }
 
@@ -65,6 +67,7 @@ pub fn MessageInput() -> impl IntoView {
                                 state.complete_message();
                                 state.add_error(format!("WebSocket error: {}", e));
                                 state.is_streaming.set(false);
+                                state.is_connected.set(false);
                                 break;
                             }
                         }
@@ -76,6 +79,7 @@ pub fn MessageInput() -> impl IntoView {
                     }
                     state.add_error(e);
                     state.is_streaming.set(false);
+                    state.is_connected.set(false);
                 }
             }
         });
