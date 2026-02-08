@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use tracing::warn;
+use tracing::{debug, info, warn};
 
 use super::server::AppState;
 use crate::agent::AgentEvent;
@@ -10,10 +10,26 @@ use crate::types::Message as AgentMessage;
 
 #[derive(Deserialize)]
 struct RpcRequest {
-    id: String,
+    id: RpcId,
     method: String,
     #[serde(default)]
     params: serde_json::Value,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum RpcId {
+    String(String),
+    Number(serde_json::Number),
+}
+
+impl RpcId {
+    fn into_string(self) -> String {
+        match self {
+            RpcId::String(value) => value,
+            RpcId::Number(value) => value.to_string(),
+        }
+    }
 }
 
 /// Parameters for the `chat.send` RPC method.
@@ -54,6 +70,17 @@ pub enum RpcResult {
     },
 }
 
+fn event_kind(event: &AgentEvent) -> &'static str {
+    match event {
+        AgentEvent::Text(_) => "text",
+        AgentEvent::ToolUse { .. } => "tool_use",
+        AgentEvent::ToolResult { .. } => "tool_result",
+        AgentEvent::Usage { .. } => "usage",
+        AgentEvent::Done => "done",
+        AgentEvent::Error(_) => "error",
+    }
+}
+
 /// Handle an incoming JSON-RPC-style message.
 pub async fn handle_rpc(msg: &str, state: &Arc<AppState>) -> RpcResult {
     let req: RpcRequest = match serde_json::from_str(msg) {
@@ -70,10 +97,12 @@ pub async fn handle_rpc(msg: &str, state: &Arc<AppState>) -> RpcResult {
         }
     };
 
+    let request_id = req.id.into_string();
+
     match req.method.as_str() {
         "ping" => {
             let resp = RpcResponse {
-                id: req.id,
+                id: request_id,
                 result: Some(serde_json::json!("pong")),
                 error: None,
             };
@@ -83,7 +112,7 @@ pub async fn handle_rpc(msg: &str, state: &Arc<AppState>) -> RpcResult {
         "status" => {
             let router = state.router.read().await;
             let resp = RpcResponse {
-                id: req.id,
+                id: request_id,
                 result: Some(serde_json::json!({
                     "version": env!("CARGO_PKG_VERSION"),
                     "plugins": state.plugins.read().await.count(),
@@ -99,7 +128,7 @@ pub async fn handle_rpc(msg: &str, state: &Arc<AppState>) -> RpcResult {
                 Ok(p) => p,
                 Err(e) => {
                     let resp = RpcResponse {
-                        id: req.id,
+                        id: request_id,
                         result: None,
                         error: Some(format!("invalid chat.send params: {e}")),
                     };
@@ -107,13 +136,13 @@ pub async fn handle_rpc(msg: &str, state: &Arc<AppState>) -> RpcResult {
                 }
             };
 
-            handle_chat_send(req.id, params, state).await
+            handle_chat_send(request_id, params, state).await
         }
 
         "plugin.list" => {
             let plugins = state.plugins.read().await;
             let resp = RpcResponse {
-                id: req.id,
+                id: request_id,
                 result: Some(serde_json::json!(plugins.list())),
                 error: None,
             };
@@ -122,7 +151,7 @@ pub async fn handle_rpc(msg: &str, state: &Arc<AppState>) -> RpcResult {
 
         _ => {
             let resp = RpcResponse {
-                id: req.id,
+                id: request_id,
                 result: None,
                 error: Some(format!("unknown method: {}", req.method)),
             };
@@ -148,6 +177,14 @@ async fn handle_chat_send(
             params.team.as_deref(),
         )
     };
+    info!(
+        request_id = %request_id,
+        session = %route.session_key,
+        agent = %route.agent_id,
+        provider = %state.config.agent.provider,
+        message_chars = params.content.chars().count(),
+        "chat.send accepted"
+    );
 
     // 2. Get/create session and append user message
     {
@@ -224,10 +261,17 @@ async fn handle_chat_send(
     let plugins = Arc::clone(&state.plugins);
     let budget_config = state.config.budgets.clone();
     let session_lock = state.session_lock(&route.session_key).await;
+    let relay_request_id = request_id.clone();
+    let runner_request_id = request_id.clone();
 
     // Metering relay: intercepts events to record usage, then forwards to client.
     tokio::spawn(async move {
         while let Some(event) = meter_rx.recv().await {
+            debug!(
+                request_id = %relay_request_id,
+                event = event_kind(&event),
+                "relaying agent event"
+            );
             // Record usage when we see a Usage event (T031/T033)
             if let AgentEvent::Usage {
                 input_tokens,
@@ -246,14 +290,26 @@ async fn handle_chat_send(
                 );
             }
             if tx.send(event).await.is_err() {
+                debug!(request_id = %relay_request_id, "client receiver dropped");
                 break;
             }
         }
+        debug!(request_id = %relay_request_id, "agent relay channel closed");
     });
 
     tokio::spawn(async move {
         // Serialize all processing for this session across connections.
+        debug!(
+            request_id = %runner_request_id,
+            session = %session_key,
+            "waiting for session lock"
+        );
         let _session_guard = session_lock.lock().await;
+        debug!(
+            request_id = %runner_request_id,
+            session = %session_key,
+            "acquired session lock"
+        );
 
         let runner = crate::agent::AgentRunner::new();
         let result = runner
@@ -268,10 +324,21 @@ async fn handle_chat_send(
             .await;
 
         if let Err(e) = result {
+            warn!(
+                request_id = %runner_request_id,
+                session = %session_key,
+                "provider run failed: {e}"
+            );
             let _ = meter_tx
                 .send(AgentEvent::Error(format!("provider error: {e}")))
                 .await;
             let _ = meter_tx.send(AgentEvent::Done).await;
+        } else {
+            debug!(
+                request_id = %runner_request_id,
+                session = %session_key,
+                "provider run completed"
+            );
         }
 
         // Collect assistant response text and append to session

@@ -12,5 +12,8 @@ use wasm_bindgen::prelude::*;
 #[cfg(not(test))]
 #[wasm_bindgen(start)]
 pub fn start() {
+    console_error_panic_hook::set_once();
+    let _ = console_log::init_with_level(log::Level::Info);
+    log::info!("exoclaw-ui boot");
     leptos::mount::mount_to_body(App);
 }

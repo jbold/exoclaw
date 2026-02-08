@@ -2,7 +2,8 @@ use async_trait::async_trait;
 use futures::StreamExt;
 use reqwest::Client;
 use tokio::sync::mpsc;
-use tracing::debug;
+use tokio::time::{Duration, timeout};
+use tracing::{debug, warn};
 
 use super::AgentEvent;
 
@@ -14,6 +15,46 @@ fn anthropic_endpoint() -> String {
 fn openai_endpoint() -> String {
     std::env::var("EXOCLAW_OPENAI_ENDPOINT")
         .unwrap_or_else(|_| "https://api.openai.com/v1/chat/completions".to_string())
+}
+
+const PROVIDER_REQUEST_TIMEOUT_SECS: u64 = 45;
+const PROVIDER_STREAM_IDLE_TIMEOUT_SECS: u64 = 45;
+
+fn pop_next_sse_event(buffer: &mut String) -> Option<String> {
+    if buffer.contains('\r') {
+        // SSE allows CRLF, LF, and CR. Normalize everything to LF so splitting
+        // on "\n\n" is robust across providers and proxies.
+        *buffer = buffer.replace("\r\n", "\n").replace('\r', "\n");
+    }
+
+    let pos = buffer.find("\n\n")?;
+    let event = buffer[..pos].to_string();
+    buffer.replace_range(..pos + 2, "");
+    Some(event)
+}
+
+fn parse_sse_fields(event_text: &str) -> (String, String) {
+    let mut event_type = String::new();
+    let mut data_lines = Vec::new();
+
+    for raw in event_text.lines() {
+        if raw.is_empty() || raw.starts_with(':') {
+            continue;
+        }
+
+        let Some((field, value)) = raw.split_once(':') else {
+            continue;
+        };
+        let value = value.strip_prefix(' ').unwrap_or(value);
+
+        match field {
+            "event" => event_type = value.to_string(),
+            "data" => data_lines.push(value.to_string()),
+            _ => {}
+        }
+    }
+
+    (event_type, data_lines.join("\n"))
 }
 
 /// Trait for LLM provider implementations.
@@ -78,6 +119,14 @@ impl LlmProvider for AnthropicProvider {
         system_prompt: Option<&str>,
         tx: mpsc::Sender<AgentEvent>,
     ) -> anyhow::Result<()> {
+        debug!(
+            provider = "anthropic",
+            model = %self.model,
+            message_count = messages.len(),
+            tool_count = tools.len(),
+            "starting provider stream"
+        );
+
         let mut body = serde_json::json!({
             "model": self.model,
             "max_tokens": self.max_tokens,
@@ -93,15 +142,24 @@ impl LlmProvider for AnthropicProvider {
             body["tools"] = serde_json::json!(tools);
         }
 
-        let response = self
-            .client
-            .post(anthropic_endpoint())
-            .header("x-api-key", &self.api_key)
-            .header("anthropic-version", "2023-06-01")
-            .header("content-type", "application/json")
-            .json(&body)
-            .send()
-            .await?;
+        let response = timeout(
+            Duration::from_secs(PROVIDER_REQUEST_TIMEOUT_SECS),
+            self.client
+                .post(anthropic_endpoint())
+                .header("x-api-key", &self.api_key)
+                .header("anthropic-version", "2023-06-01")
+                .header("content-type", "application/json")
+                .json(&body)
+                .send(),
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("provider request timed out"))??;
+
+        debug!(
+            provider = "anthropic",
+            status = %response.status(),
+            "provider response received"
+        );
 
         if !response.status().is_success() {
             let status = response.status();
@@ -121,28 +179,45 @@ impl LlmProvider for AnthropicProvider {
         let mut input_tokens: u32 = 0;
         let mut output_tokens: u32 = 0;
 
-        while let Some(chunk) = stream.next().await {
-            let chunk = chunk?;
+        loop {
+            let chunk = match timeout(
+                Duration::from_secs(PROVIDER_STREAM_IDLE_TIMEOUT_SECS),
+                stream.next(),
+            )
+            .await
+            {
+                Ok(Some(chunk)) => chunk?,
+                Ok(None) => {
+                    debug!(provider = "anthropic", "provider stream closed");
+                    break;
+                }
+                Err(_) => {
+                    return Err(anyhow::anyhow!(
+                        "provider stream idle timeout after {}s",
+                        PROVIDER_STREAM_IDLE_TIMEOUT_SECS
+                    ));
+                }
+            };
+            debug!(
+                provider = "anthropic",
+                chunk_bytes = chunk.len(),
+                "received stream chunk"
+            );
             buffer.push_str(&String::from_utf8_lossy(&chunk));
 
-            while let Some(pos) = buffer.find("\n\n") {
-                let event_text = buffer[..pos].to_string();
-                buffer = buffer[pos + 2..].to_string();
-
-                // Parse SSE event type and data
-                let mut event_type = String::new();
-                let mut data = String::new();
-                for line in event_text.lines() {
-                    if let Some(et) = line.strip_prefix("event: ") {
-                        event_type = et.to_string();
-                    } else if let Some(d) = line.strip_prefix("data: ") {
-                        data = d.to_string();
-                    }
-                }
+            while let Some(event_text) = pop_next_sse_event(&mut buffer) {
+                let (event_type, data) = parse_sse_fields(&event_text);
 
                 if data.is_empty() || data == "[DONE]" {
                     continue;
                 }
+
+                debug!(
+                    provider = "anthropic",
+                    event = %event_type,
+                    data_bytes = data.len(),
+                    "parsed SSE event"
+                );
 
                 let parsed: serde_json::Value = match serde_json::from_str(&data) {
                     Ok(v) => v,
@@ -235,6 +310,7 @@ impl LlmProvider for AnthropicProvider {
                             })
                             .await;
                         let _ = tx.send(AgentEvent::Done).await;
+                        debug!(provider = "anthropic", "provider stream completed");
                         return Ok(());
                     }
 
@@ -243,6 +319,10 @@ impl LlmProvider for AnthropicProvider {
             }
         }
 
+        warn!(
+            provider = "anthropic",
+            "provider stream ended without explicit message_stop"
+        );
         let _ = tx
             .send(AgentEvent::Usage {
                 input_tokens,
@@ -281,6 +361,14 @@ impl LlmProvider for OpenAiProvider {
         system_prompt: Option<&str>,
         tx: mpsc::Sender<AgentEvent>,
     ) -> anyhow::Result<()> {
+        debug!(
+            provider = "openai",
+            model = %self.model,
+            message_count = messages.len(),
+            tool_count = tools.len(),
+            "starting provider stream"
+        );
+
         // Prepend system message if provided
         let mut all_messages = Vec::new();
         if let Some(system) = system_prompt {
@@ -303,14 +391,23 @@ impl LlmProvider for OpenAiProvider {
             body["tools"] = serde_json::json!(tools);
         }
 
-        let response = self
-            .client
-            .post(openai_endpoint())
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .header("content-type", "application/json")
-            .json(&body)
-            .send()
-            .await?;
+        let response = timeout(
+            Duration::from_secs(PROVIDER_REQUEST_TIMEOUT_SECS),
+            self.client
+                .post(openai_endpoint())
+                .header("Authorization", format!("Bearer {}", self.api_key))
+                .header("content-type", "application/json")
+                .json(&body)
+                .send(),
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("provider request timed out"))??;
+
+        debug!(
+            provider = "openai",
+            status = %response.status(),
+            "provider response received"
+        );
 
         if !response.status().is_success() {
             let status = response.status();
@@ -329,15 +426,42 @@ impl LlmProvider for OpenAiProvider {
         let mut input_tokens: u32 = 0;
         let mut output_tokens: u32 = 0;
 
-        while let Some(chunk) = stream.next().await {
-            let chunk = chunk?;
+        loop {
+            let chunk = match timeout(
+                Duration::from_secs(PROVIDER_STREAM_IDLE_TIMEOUT_SECS),
+                stream.next(),
+            )
+            .await
+            {
+                Ok(Some(chunk)) => chunk?,
+                Ok(None) => {
+                    debug!(provider = "openai", "provider stream closed");
+                    break;
+                }
+                Err(_) => {
+                    return Err(anyhow::anyhow!(
+                        "provider stream idle timeout after {}s",
+                        PROVIDER_STREAM_IDLE_TIMEOUT_SECS
+                    ));
+                }
+            };
+            debug!(
+                provider = "openai",
+                chunk_bytes = chunk.len(),
+                "received stream chunk"
+            );
             buffer.push_str(&String::from_utf8_lossy(&chunk));
 
-            while let Some(pos) = buffer.find("\n\n") {
-                let event = buffer[..pos].to_string();
-                buffer = buffer[pos + 2..].to_string();
-
-                if let Some(data) = event.strip_prefix("data: ") {
+            while let Some(event_text) = pop_next_sse_event(&mut buffer) {
+                let (_event_type, data) = parse_sse_fields(&event_text);
+                if !data.is_empty() {
+                    debug!(
+                        provider = "openai",
+                        data_bytes = data.len(),
+                        "parsed SSE event"
+                    );
+                }
+                if !data.is_empty() {
                     if data == "[DONE]" {
                         let _ = tx
                             .send(AgentEvent::Usage {
@@ -346,10 +470,11 @@ impl LlmProvider for OpenAiProvider {
                             })
                             .await;
                         let _ = tx.send(AgentEvent::Done).await;
+                        debug!(provider = "openai", "provider stream completed");
                         return Ok(());
                     }
 
-                    let parsed: serde_json::Value = match serde_json::from_str(data) {
+                    let parsed: serde_json::Value = match serde_json::from_str(&data) {
                         Ok(v) => v,
                         Err(_) => continue,
                     };
@@ -430,6 +555,10 @@ impl LlmProvider for OpenAiProvider {
             }
         }
 
+        warn!(
+            provider = "openai",
+            "provider stream ended without explicit [DONE]"
+        );
         let _ = tx
             .send(AgentEvent::Usage {
                 input_tokens,
@@ -526,5 +655,36 @@ pub fn build_tools_for_provider(
         "anthropic" => build_anthropic_tools(schemas),
         "openai" => build_openai_tools(schemas),
         _ => build_anthropic_tools(schemas), // default to Anthropic format
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_sse_fields, pop_next_sse_event};
+
+    #[test]
+    fn pop_next_sse_event_handles_crlf() {
+        let mut buffer = "event: ping\r\ndata: {\"ok\":true}\r\n\r\nrest".to_string();
+        let event = pop_next_sse_event(&mut buffer).expect("event");
+        assert_eq!(event, "event: ping\ndata: {\"ok\":true}");
+        assert_eq!(buffer, "rest");
+    }
+
+    #[test]
+    fn pop_next_sse_event_handles_cr_only() {
+        let mut buffer = "data: one\r\rdata: two\r\r".to_string();
+        let first = pop_next_sse_event(&mut buffer).expect("first");
+        let second = pop_next_sse_event(&mut buffer).expect("second");
+        assert_eq!(first, "data: one");
+        assert_eq!(second, "data: two");
+    }
+
+    #[test]
+    fn parse_sse_fields_collects_multiline_data() {
+        let (event_type, data) = parse_sse_fields(
+            "event: message_delta\n:data-comment\ndata: {\"a\":1}\ndata: {\"b\":2}",
+        );
+        assert_eq!(event_type, "message_delta");
+        assert_eq!(data, "{\"a\":1}\n{\"b\":2}");
     }
 }
