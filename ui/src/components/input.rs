@@ -112,6 +112,7 @@ pub fn MessageInput() -> impl IntoView {
         <div class="input-area">
             <textarea
                 class="chat-input"
+                data-testid="chat-input"
                 prop:value=move || state.input_text.get()
                 prop:disabled=is_disabled
                 placeholder=placeholder
@@ -122,6 +123,7 @@ pub fn MessageInput() -> impl IntoView {
             ></textarea>
             <button
                 class="send-button"
+                data-testid="send-button"
                 prop:disabled=is_disabled
                 on:click=on_send_click
             >

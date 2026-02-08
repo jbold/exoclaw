@@ -1,0 +1,23 @@
+[graph]
+all-features = true
+
+[advisories]
+ignore = [
+  # extism transitively pins wasmtime 37.x today.
+  # Track upgrade path to a patched wasmtime line.
+  "RUSTSEC-2026-0006",
+  # transitive via wasmtime profiling stack
+  "RUSTSEC-2025-0057",
+  # transitive via async-nats / rustls-native-certs
+  "RUSTSEC-2025-0134",
+]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "allow"
+highlight = "all"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

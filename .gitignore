@@ -15,3 +15,5 @@ Thumbs.db
 *.tmp
 *.swp
 .vscode/
+node_modules/
+output/playwright/

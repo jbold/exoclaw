@@ -1,8 +1,9 @@
-use futures::{SinkExt, StreamExt};
+use futures::{FutureExt, SinkExt, StreamExt};
 use gloo_net::websocket::{Message, futures::WebSocket};
+use gloo_timers::future::TimeoutFuture;
 use serde_json::{Value, json};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StreamEvent {
     Text(String),
     ToolUse { name: String, input: String },
@@ -21,6 +22,18 @@ fn ws_url() -> Result<String, String> {
 
 pub fn parse_event(msg: &str) -> Option<StreamEvent> {
     let v: Value = serde_json::from_str(msg).ok()?;
+
+    // Handle JSON-RPC error responses (no "event" field, has "error" field)
+    if let Some(err) = v.get("error") {
+        if let Some(msg) = err.as_str() {
+            return Some(StreamEvent::Error(msg.to_string()));
+        }
+        if let Some(msg) = err.get("message").and_then(|m| m.as_str()) {
+            return Some(StreamEvent::Error(msg.to_string()));
+        }
+        return Some(StreamEvent::Error(err.to_string()));
+    }
+
     let event = v.get("event")?.as_str()?;
     match event {
         "text" => {
@@ -81,6 +94,45 @@ pub async fn connect(token: Option<String>) -> Result<WsConnection, String> {
         if v.get("ok").and_then(|v| v.as_bool()) != Some(true) {
             return Err("authentication failed".to_string());
         }
+    } else {
+        // In no-token mode, loopback gateway sends {"ok":true,...} immediately.
+        // Token-protected gateway waits for an auth frame and sends nothing.
+        // Use a short timeout to detect that auth is required.
+        let read_next = read.next().fuse();
+        let timeout = TimeoutFuture::new(800).fuse();
+        futures::pin_mut!(read_next, timeout);
+
+        match futures::select! {
+            msg = read_next => Some(msg),
+            _ = timeout => None,
+        } {
+            Some(Some(Ok(resp))) => {
+                let resp_text = match resp {
+                    Message::Text(t) => t,
+                    Message::Bytes(b) => {
+                        String::from_utf8(b).map_err(|_| "invalid utf8 in auth response")?
+                    }
+                };
+
+                let v: Value =
+                    serde_json::from_str(&resp_text).map_err(|_| "invalid JSON in response")?;
+                if v.get("ok").and_then(|v| v.as_bool()) != Some(true) {
+                    if let Some(err) = v.get("error") {
+                        if let Some(msg) = err.as_str() {
+                            return Err(msg.to_string());
+                        }
+                        if let Some(msg) = err.get("message").and_then(|m| m.as_str()) {
+                            return Err(msg.to_string());
+                        }
+                        return Err(err.to_string());
+                    }
+                    return Err("authentication failed".to_string());
+                }
+            }
+            Some(Some(Err(e))) => return Err(format!("read response failed: {}", e)),
+            Some(None) => return Err("connection closed during handshake".to_string()),
+            None => return Err("authentication required".to_string()),
+        }
     }
 
     Ok(WsConnection { write, read })
@@ -95,7 +147,11 @@ pub async fn send_chat(
         "jsonrpc": "2.0",
         "id": id,
         "method": "chat.send",
-        "params": {"content": content}
+        "params": {
+            "channel": "web",
+            "account": "browser",
+            "content": content,
+        }
     });
     write
         .send(Message::Text(msg.to_string()))

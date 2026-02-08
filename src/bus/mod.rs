@@ -51,3 +51,35 @@ impl Default for MessageBus {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::MessageBus;
+
+    #[test]
+    fn new_and_default_start_disconnected() {
+        let bus = MessageBus::new();
+        assert!(!bus.is_connected());
+
+        let bus_default = MessageBus::default();
+        assert!(!bus_default.is_connected());
+    }
+
+    #[tokio::test]
+    async fn publish_without_connection_is_noop() {
+        let bus = MessageBus::new();
+        bus.publish("exoclaw.web.account.peer", b"payload")
+            .await
+            .expect("publish should be a no-op when disconnected");
+        assert!(!bus.is_connected());
+    }
+
+    #[tokio::test]
+    async fn connect_to_unreachable_server_falls_back_to_local_mode() {
+        let mut bus = MessageBus::new();
+        bus.connect("nats://127.0.0.1:1")
+            .await
+            .expect("unreachable nats should not hard-fail");
+        assert!(!bus.is_connected());
+    }
+}

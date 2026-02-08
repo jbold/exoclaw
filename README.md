@@ -97,6 +97,19 @@ cargo run -- plugin load ./plugins/telegram.wasm
 
 The gateway binds to `127.0.0.1:7200` by default. When binding to a non-loopback address, an auth token is required (via `--token` or `EXOCLAW_TOKEN` env var).
 
+## Testing
+
+See `TESTING.md` for the full red/green workflow and CI layout.
+
+Quick commands:
+
+```bash
+./scripts/test-rust.sh      # backend + coverage gate
+./scripts/test-wasm-ui.sh   # wasm-bindgen-test via wasm-pack
+./scripts/test-e2e.sh       # Playwright browser flows
+./scripts/test-all.sh       # full stack
+```
+
 ## Project status
 
 **Early development. Not production ready.**

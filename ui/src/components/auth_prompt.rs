@@ -28,13 +28,14 @@ pub fn AuthPrompt() -> impl IntoView {
     };
 
     view! {
-        <div class="auth-overlay">
+        <div class="auth-overlay" data-testid="auth-overlay">
             <div class="auth-modal">
                 <h2>"Authentication Required"</h2>
                 <p>"Enter your gateway token to connect."</p>
                 <input
                     type="password"
                     class="auth-input"
+                    data-testid="auth-token-input"
                     placeholder="Token..."
                     prop:value=move || token_input.get()
                     on:input:target=move |ev| {
@@ -42,7 +43,7 @@ pub fn AuthPrompt() -> impl IntoView {
                     }
                     on:keydown=on_keydown
                 />
-                <button class="auth-button" on:click=on_submit>
+                <button class="auth-button" data-testid="auth-connect-button" on:click=on_submit>
                     "Connect"
                 </button>
             </div>

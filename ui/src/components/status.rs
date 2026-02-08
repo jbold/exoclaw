@@ -42,7 +42,7 @@ pub fn ConnectionStatus() -> impl IntoView {
     };
 
     view! {
-        <div class="connection-status" on:click=on_click title=label>
+        <div class="connection-status" data-testid="connection-status" on:click=on_click title=label>
             <span class=dot_class></span>
             <span class="status-label">{label}</span>
         </div>
