@@ -1,6 +1,12 @@
 use crate::state::ChatState;
 use crate::ws;
+use futures::{FutureExt, StreamExt};
+use gloo_net::websocket::Message;
+use gloo_timers::future::TimeoutFuture;
 use leptos::prelude::*;
+use log::{debug, warn};
+
+const STREAM_IDLE_TIMEOUT_MS: u32 = 60_000;
 
 #[component]
 pub fn MessageInput() -> impl IntoView {
@@ -24,19 +30,37 @@ pub fn MessageInput() -> impl IntoView {
             match conn {
                 Ok(mut conn) => {
                     state.is_connected.set(true);
-                    if let Err(e) = ws::send_chat(&mut conn.write, &content, 1).await {
+                    let request_id = format!("web-{}", js_sys::Date::now() as u64);
+                    if let Err(e) = ws::send_chat(&mut conn.write, &content, &request_id).await {
                         state.add_error(e);
                         state.is_streaming.set(false);
                         state.is_connected.set(false);
                         return;
                     }
 
-                    use futures::StreamExt;
-                    use gloo_net::websocket::Message;
+                    loop {
+                        let next_msg = conn.read.next().fuse();
+                        let timeout = TimeoutFuture::new(STREAM_IDLE_TIMEOUT_MS).fuse();
+                        futures::pin_mut!(next_msg, timeout);
 
-                    while let Some(msg) = conn.read.next().await {
+                        let msg = futures::select! {
+                            msg = next_msg => msg,
+                            _ = timeout => {
+                                warn!("stream timed out for request_id={request_id}");
+                                state.complete_message();
+                                state.add_error("Timed out waiting for model response.".to_string());
+                                state.is_streaming.set(false);
+                                state.is_connected.set(false);
+                                return;
+                            }
+                        };
+
                         match msg {
-                            Ok(Message::Text(text)) => {
+                            Some(Ok(Message::Text(text))) => {
+                                debug!(
+                                    "received text websocket frame (request_id={request_id}, bytes={})",
+                                    text.len()
+                                );
                                 if let Some(event) = ws::parse_event(&text) {
                                     match event {
                                         ws::StreamEvent::Text(t) => {
@@ -62,11 +86,23 @@ pub fn MessageInput() -> impl IntoView {
                                     }
                                 }
                             }
-                            Ok(Message::Bytes(_)) => {}
-                            Err(e) => {
+                            Some(Ok(Message::Bytes(_))) => {}
+                            Some(Err(e)) => {
                                 state.complete_message();
                                 state.add_error(format!("WebSocket error: {}", e));
                                 state.is_streaming.set(false);
+                                state.is_connected.set(false);
+                                break;
+                            }
+                            None => {
+                                warn!("websocket closed before stream completion");
+                                if state.is_streaming.get() {
+                                    state.complete_message();
+                                    state.add_error(
+                                        "Connection closed before response completed.".to_string(),
+                                    );
+                                    state.is_streaming.set(false);
+                                }
                                 state.is_connected.set(false);
                                 break;
                             }

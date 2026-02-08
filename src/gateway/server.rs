@@ -12,7 +12,7 @@ use rust_embed::Embed;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::{Mutex, RwLock};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 #[derive(Embed)]
 #[folder = "ui/dist/"]
@@ -227,9 +227,24 @@ async fn handle_connection(mut socket: WebSocket, state: Arc<AppState>) {
                         user_content,
                         mut rx,
                     } => {
+                        info!(
+                            request_id = %id,
+                            session = %session_key,
+                            "starting websocket event stream"
+                        );
                         // Stream AgentEvents as JSON frames to the client
                         let mut assistant_text = String::new();
+                        let mut saw_done = false;
+                        let mut sent_frames: usize = 0;
                         while let Some(event) = rx.recv().await {
+                            let event_kind = match &event {
+                                AgentEvent::Text(_) => "text",
+                                AgentEvent::ToolUse { .. } => "tool_use",
+                                AgentEvent::ToolResult { .. } => "tool_result",
+                                AgentEvent::Usage { .. } => "usage",
+                                AgentEvent::Done => "done",
+                                AgentEvent::Error(_) => "error",
+                            };
                             let frame = match &event {
                                 AgentEvent::Text(text) => {
                                     assistant_text.push_str(text);
@@ -301,10 +316,24 @@ async fn handle_connection(mut socket: WebSocket, state: Arc<AppState>) {
                             let frame_str = serde_json::to_string(&frame).unwrap_or_default();
                             if socket.send(Message::Text(frame_str.into())).await.is_err() {
                                 // Client disconnected mid-stream
+                                debug!(
+                                    request_id = %id,
+                                    session = %session_key,
+                                    "client disconnected during stream send"
+                                );
                                 break;
                             }
+                            sent_frames += 1;
+                            debug!(
+                                request_id = %id,
+                                session = %session_key,
+                                sent_frames,
+                                event = event_kind,
+                                "sent stream frame"
+                            );
 
                             if is_done {
+                                saw_done = true;
                                 // Append collected assistant text to session
                                 if !assistant_text.is_empty() {
                                     let mut store = state.store.write().await;
@@ -328,6 +357,14 @@ async fn handle_connection(mut socket: WebSocket, state: Arc<AppState>) {
                                 }
                                 break;
                             }
+                        }
+                        if !saw_done {
+                            warn!(
+                                request_id = %id,
+                                session = %session_key,
+                                sent_frames,
+                                "stream ended without done"
+                            );
                         }
                     }
                 }

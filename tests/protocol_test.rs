@@ -39,6 +39,18 @@ async fn ping_returns_pong() {
 }
 
 #[tokio::test]
+async fn ping_accepts_numeric_id() {
+    let state = build_state(ExoclawConfig::default());
+    let result = handle_rpc(r#"{"id":1,"method":"ping"}"#, &state).await;
+    let RpcResult::Response(resp) = result else {
+        panic!("expected response");
+    };
+    let parsed: serde_json::Value = serde_json::from_str(&resp).unwrap();
+    assert_eq!(parsed["id"], "1");
+    assert_eq!(parsed["result"], "pong");
+}
+
+#[tokio::test]
 async fn status_returns_version_plugins_sessions() {
     let state = build_state(ExoclawConfig::default());
     let result = handle_rpc(r#"{"id":"2","method":"status"}"#, &state).await;

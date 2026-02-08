@@ -1,6 +1,7 @@
 use futures::{FutureExt, SinkExt, StreamExt};
 use gloo_net::websocket::{Message, futures::WebSocket};
 use gloo_timers::future::TimeoutFuture;
+use log::{debug, info, warn};
 use serde_json::{Value, json};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -21,7 +22,15 @@ fn ws_url() -> Result<String, String> {
 }
 
 pub fn parse_event(msg: &str) -> Option<StreamEvent> {
-    let v: Value = serde_json::from_str(msg).ok()?;
+    let v: Value = match serde_json::from_str(msg) {
+        Ok(v) => v,
+        Err(e) => {
+            warn!("failed to parse websocket frame as JSON: {e}");
+            return Some(StreamEvent::Error(
+                "invalid response from gateway".to_string(),
+            ));
+        }
+    };
 
     // Handle JSON-RPC error responses (no "event" field, has "error" field)
     if let Some(err) = v.get("error") {
@@ -54,7 +63,14 @@ pub fn parse_event(msg: &str) -> Option<StreamEvent> {
                 .unwrap_or("unknown error");
             Some(StreamEvent::Error(data.to_string()))
         }
-        _ => None,
+        "usage" | "tool_result" => {
+            debug!("ignoring non-render event frame: {event}");
+            None
+        }
+        other => {
+            debug!("unknown stream event: {other}");
+            None
+        }
     }
 }
 
@@ -65,6 +81,7 @@ pub struct WsConnection {
 
 pub async fn connect(token: Option<String>) -> Result<WsConnection, String> {
     let url = ws_url()?;
+    info!("opening websocket connection to {url}");
     let ws = WebSocket::open(&url).map_err(|e| format!("WebSocket open failed: {}", e))?;
     let (mut write, mut read) = ws.split();
 
@@ -94,6 +111,7 @@ pub async fn connect(token: Option<String>) -> Result<WsConnection, String> {
         if v.get("ok").and_then(|v| v.as_bool()) != Some(true) {
             return Err("authentication failed".to_string());
         }
+        info!("websocket authenticated");
     } else {
         // In no-token mode, loopback gateway sends {"ok":true,...} immediately.
         // Token-protected gateway waits for an auth frame and sends nothing.
@@ -131,7 +149,10 @@ pub async fn connect(token: Option<String>) -> Result<WsConnection, String> {
             }
             Some(Some(Err(e))) => return Err(format!("read response failed: {}", e)),
             Some(None) => return Err("connection closed during handshake".to_string()),
-            None => return Err("authentication required".to_string()),
+            None => {
+                debug!("no handshake ack in timeout window; treating as auth-required");
+                return Err("authentication required".to_string());
+            }
         }
     }
 
@@ -141,8 +162,12 @@ pub async fn connect(token: Option<String>) -> Result<WsConnection, String> {
 pub async fn send_chat(
     write: &mut futures::stream::SplitSink<WebSocket, Message>,
     content: &str,
-    id: u32,
+    id: &str,
 ) -> Result<(), String> {
+    info!(
+        "sending chat request id={id} chars={}",
+        content.chars().count()
+    );
     let msg = json!({
         "jsonrpc": "2.0",
         "id": id,

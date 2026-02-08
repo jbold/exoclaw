@@ -59,9 +59,10 @@ enum PluginAction {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env())
-        .init();
+    let env_filter = EnvFilter::try_from_default_env()
+        .or_else(|_| EnvFilter::try_new("warn,exoclaw=info"))
+        .unwrap_or_else(|_| EnvFilter::new("warn"));
+    tracing_subscriber::fmt().with_env_filter(env_filter).init();
 
     let cli = Cli::parse();
 
