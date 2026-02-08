@@ -1,6 +1,7 @@
 pub mod agent;
 pub mod bus;
 pub mod config;
+pub mod fs_util;
 pub mod gateway;
 pub mod memory;
 pub mod router;

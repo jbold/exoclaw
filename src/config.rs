@@ -1,3 +1,4 @@
+use crate::fs_util::{home_dir, set_secure_dir_permissions, set_secure_file_permissions};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use tracing::info;
@@ -171,8 +172,8 @@ pub fn resolve_path() -> PathBuf {
     if let Ok(path) = std::env::var("EXOCLAW_CONFIG") {
         return PathBuf::from(path);
     }
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-    PathBuf::from(home).join(".exoclaw").join("config.toml")
+    let home = home_dir().unwrap_or_else(|_| PathBuf::from("."));
+    home.join(".exoclaw").join("config.toml")
 }
 
 /// Save config to the default path with secure permissions.
@@ -243,29 +244,5 @@ fn validate(config: &ExoclawConfig) -> anyhow::Result<()> {
         }
     }
 
-    Ok(())
-}
-
-#[cfg(unix)]
-fn set_secure_dir_permissions(path: &Path) -> anyhow::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
-        .map_err(|e| anyhow::anyhow!("failed to chmod 700 {}: {e}", path.display()))
-}
-
-#[cfg(not(unix))]
-fn set_secure_dir_permissions(_path: &Path) -> anyhow::Result<()> {
-    Ok(())
-}
-
-#[cfg(unix)]
-fn set_secure_file_permissions(path: &Path) -> anyhow::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
-        .map_err(|e| anyhow::anyhow!("failed to chmod 600 {}: {e}", path.display()))
-}
-
-#[cfg(not(unix))]
-fn set_secure_file_permissions(_path: &Path) -> anyhow::Result<()> {
     Ok(())
 }

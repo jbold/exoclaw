@@ -1,8 +1,10 @@
+use crate::fs_util::{home_dir, set_secure_dir_permissions, set_secure_file_permissions};
 use std::path::{Path, PathBuf};
 
 fn default_state_dir() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-    PathBuf::from(home).join(".exoclaw")
+    home_dir()
+        .unwrap_or_else(|_| PathBuf::from("."))
+        .join(".exoclaw")
 }
 
 fn state_dir() -> PathBuf {
@@ -69,30 +71,6 @@ pub fn store_api_key(provider: &str, api_key: &str) -> anyhow::Result<PathBuf> {
 /// Load a provider API key from ~/.exoclaw/credentials/{provider}.key.
 pub fn load_api_key(provider: &str) -> Option<String> {
     read_key_from(&state_dir(), provider)
-}
-
-#[cfg(unix)]
-fn set_secure_dir_permissions(path: &Path) -> anyhow::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
-        .map_err(|e| anyhow::anyhow!("failed to chmod 700 {}: {e}", path.display()))
-}
-
-#[cfg(not(unix))]
-fn set_secure_dir_permissions(_path: &Path) -> anyhow::Result<()> {
-    Ok(())
-}
-
-#[cfg(unix)]
-fn set_secure_file_permissions(path: &Path) -> anyhow::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
-        .map_err(|e| anyhow::anyhow!("failed to chmod 600 {}: {e}", path.display()))
-}
-
-#[cfg(not(unix))]
-fn set_secure_file_permissions(_path: &Path) -> anyhow::Result<()> {
-    Ok(())
 }
 
 #[cfg(test)]

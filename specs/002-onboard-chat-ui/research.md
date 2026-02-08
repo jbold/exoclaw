@@ -5,17 +5,16 @@
 
 ## Decision 1: Frontend Framework
 
-**Decision**: Leptos 0.8 with `leptos_axum` integration
+**Decision**: Leptos 0.7 CSR (client-side rendering) with trunk + rust-embed
 
 **Rationale**:
-- Native axum 0.8 integration (exoclaw already runs on axum 0.8)
 - Fine-grained reactivity (SolidJS-style): only the text node updates when tokens stream in, no virtual DOM diffing
-- Built-in WebSocket support via server functions (added in 0.8.0)
-- WASM code splitting / lazy loading (0.8.5+)
-- 1.9x more popular than Dioxus for web-specific use cases
-- 17.7k GitHub stars, very active development (0.8.15 latest)
+- CSR approach avoids SSR complexity — trunk compiles to WASM, rust-embed serves static assets from the server binary
+- No `leptos_axum` dependency needed — axum serves pre-built WASM/HTML via a simple fallback route
+- Leptos 0.7 is the stable release compatible with Rust edition 2024
 
 **Alternatives considered**:
+- **Leptos 0.8 with leptos_axum (SSR)**: Originally planned but pivoted away — SSR adds complexity for a chat UI that doesn't need server-side rendering. CSR is simpler and keeps `cargo build/test/clippy` working normally.
 - **Dioxus 0.7**: Cross-platform (web + desktop + mobile) but virtual DOM overhead, not axum-native. Better for desktop apps.
 - **Yew**: Mature but momentum has slowed. Virtual DOM.
 - **Inline HTML/JS**: Zero build complexity (~150 lines JS) but no Rust type safety, poor markdown rendering, doesn't align with project's Rust-first philosophy.
@@ -52,19 +51,18 @@ Cargo.toml              # workspace root
 
 ## Decision 3: Build Tooling
 
-**Decision**: `cargo-leptos` replaces `cargo build` for development and release
+**Decision**: `trunk` for WASM builds + `rust-embed` for asset serving
 
 **Rationale**:
-- `cargo leptos build` orchestrates two cargo builds: native binary + WASM frontend
-- `cargo leptos watch` provides hot-reload during development
+- `trunk build` compiles the Leptos CSR app to WASM and produces `ui/dist/` (index.html + WASM + JS glue)
+- `rust-embed` embeds `ui/dist/` at compile time into the server binary — no separate asset directory needed at runtime
 - `cargo check`, `cargo clippy`, `cargo test`, `cargo fmt` still work independently for the server crate
-- Release build: `cargo leptos build --release` produces server binary + `target/site/` assets
+- Simpler than `cargo-leptos` which is designed for SSR setups
 
 **Impact on existing workflow**:
-- `cargo build` → `cargo leptos build`
-- `cargo build --release` → `cargo leptos build --release`
+- UI changes: `trunk build` then `cargo build` to re-embed assets
 - `cargo check` / `cargo test` / `cargo clippy` / `cargo fmt` → unchanged
-- CI needs `cargo-leptos` installed: `cargo install cargo-leptos`
+- CI needs `trunk` installed: `cargo install trunk`
 
 ## Decision 4: WebSocket Client (Browser)
 
@@ -78,7 +76,7 @@ Cargo.toml              # workspace root
 - The Leptos frontend connects as a regular WebSocket client
 
 **Alternatives considered**:
-- **Leptos server functions (WebSocket mode)**: Built into Leptos 0.8 but designed for Leptos-specific RPC, not generic JSON-RPC. Would require adapting the protocol.
+- **Leptos server functions (WebSocket mode)**: Designed for Leptos-specific RPC, not generic JSON-RPC. Would require adapting the protocol.
 - **Raw web-sys**: More verbose, no async ergonomics.
 
 ## Decision 5: Markdown Rendering
@@ -99,13 +97,13 @@ Cargo.toml              # workspace root
 
 ## Decision 6: Serving Strategy
 
-**Decision**: Leptos routes at `/`, existing WebSocket at `/ws`
+**Decision**: rust-embed fallback route at `/`, existing WebSocket at `/ws`
 
 **Rationale**:
-- Register custom routes (`/ws`, `/health`, `/webhook/{channel}`) BEFORE `.leptos_routes()`
-- Leptos catches `/` and serves the chat app
-- Custom handlers take precedence over Leptos catch-all
-- The WASM bundle and assets are served from `target/site/pkg/` via `tower_http::services::ServeDir`
+- Register custom routes (`/ws`, `/health`, `/webhook/{channel}`) BEFORE the UI fallback
+- The axum `.fallback(get(ui_handler))` catches `/` and all unmatched paths (SPA routing)
+- `ui_handler` serves files from the embedded `ui/dist/` assets, falling back to `index.html`
+- Custom handlers take precedence over the fallback
 
 **Route order**:
 ```
@@ -113,8 +111,7 @@ Router::new()
     .route("/ws", get(ws_handler))            // Existing JSON-RPC WebSocket
     .route("/health", get(health))            // Existing health check
     .route("/webhook/{channel}", post(...))   // Existing webhook
-    .leptos_routes(state, routes!(App))       // Leptos chat UI at /
-    .fallback(not_found)
+    .fallback(get(ui_handler))                // Embedded UI assets at /
 ```
 
 ## Decision 7: Binary Size
@@ -122,15 +119,14 @@ Router::new()
 **Decision**: Acceptable — well within 25MB constitution target
 
 **Rationale**:
-- Server binary overhead from leptos_axum: ~1-2 MB additional
-- WASM bundle (browser-side): ~50-100 KB gzipped for a minimal app
+- Server binary overhead from rust-embed: minimal (embeds pre-built WASM assets)
+- WASM bundle (browser-side): ~3 MB debug, smaller with wasm-opt
 - Current release binary: ~21 MB (LTO + strip)
-- With Leptos: estimated ~22-23 MB server binary + separate WASM assets
-- The 25MB constitution target applies to the server binary; WASM is a separate download
+- With embedded UI: estimated ~22-23 MB server binary (WASM assets included)
+- The 25MB constitution target applies to the server binary including embedded assets
 
 **Optimization levers if needed**:
-- `wasm-opt -Oz` (default in cargo-leptos)
-- Islands mode for selective hydration
+- `trunk build --release` with wasm-opt
 - Explicit `[build] target` in Cargo.toml to prevent WASM opt-level from bleeding into server profile
 
 ## Decision 8: Hidden Password Input
