@@ -36,6 +36,12 @@ pub struct RouteResult {
     pub matched_by: &'static str,
 }
 
+impl Default for SessionRouter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SessionRouter {
     pub fn new() -> Self {
         Self {

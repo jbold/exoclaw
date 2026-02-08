@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use tracing::info;
 
 /// Top-level configuration loaded from TOML.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 pub struct ExoclawConfig {
     pub gateway: GatewayConfig,
@@ -16,19 +16,6 @@ pub struct ExoclawConfig {
     pub budgets: BudgetConfig,
     #[serde(default)]
     pub memory: MemoryConfig,
-}
-
-impl Default for ExoclawConfig {
-    fn default() -> Self {
-        Self {
-            gateway: GatewayConfig::default(),
-            agent: AgentDefConfig::default(),
-            plugins: Vec::new(),
-            bindings: Vec::new(),
-            budgets: BudgetConfig::default(),
-            memory: MemoryConfig::default(),
-        }
-    }
 }
 
 #[derive(Debug, Deserialize)]

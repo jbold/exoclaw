@@ -200,6 +200,59 @@ impl PluginHost {
             }
         }
     }
+
+    /// Call a channel adapter's `parse_incoming` to convert platform payload to normalized message.
+    ///
+    /// Returns JSON with at minimum `{ "content": "...", "account": "...", "peer": "..." }`.
+    /// Creates a fresh Plugin instance per invocation for isolation.
+    pub fn call_channel_parse(
+        &self,
+        plugin_name: &str,
+        payload: &[u8],
+    ) -> anyhow::Result<serde_json::Value> {
+        let output = self.call(plugin_name, "parse_incoming", payload)?;
+        let parsed: serde_json::Value = serde_json::from_slice(&output)
+            .map_err(|e| anyhow::anyhow!("channel adapter returned invalid JSON: {e}"))?;
+        Ok(parsed)
+    }
+
+    /// Call a channel adapter's `format_outgoing` to convert normalized response to platform format.
+    ///
+    /// Takes the agent response text and returns the platform-specific payload bytes.
+    /// Creates a fresh Plugin instance per invocation for isolation.
+    pub fn call_channel_format(
+        &self,
+        plugin_name: &str,
+        response: &serde_json::Value,
+    ) -> anyhow::Result<Vec<u8>> {
+        let input = serde_json::to_vec(response)?;
+        self.call(plugin_name, "format_outgoing", &input)
+    }
+
+    /// Get the plugin type for a named plugin.
+    pub fn plugin_type(&self, name: &str) -> Option<&PluginType> {
+        self.plugins.get(name).map(|p| &p.plugin_type)
+    }
+
+    /// Find a channel adapter plugin by channel name.
+    ///
+    /// Looks for a plugin with `PluginType::ChannelAdapter` whose name matches the channel.
+    pub fn find_channel_adapter(&self, channel: &str) -> Option<&str> {
+        self.plugins
+            .iter()
+            .find(|(_, entry)| {
+                entry.plugin_type == PluginType::ChannelAdapter && entry.name == channel
+            })
+            .map(|(name, _)| name.as_str())
+    }
+
+    /// Get the allowed HTTP hosts for a plugin (from its capabilities).
+    pub fn allowed_hosts(&self, plugin_name: &str) -> Vec<String> {
+        self.plugins
+            .get(plugin_name)
+            .map(|entry| capabilities::allowed_hosts(&entry.capabilities))
+            .unwrap_or_default()
+    }
 }
 
 impl Default for PluginHost {

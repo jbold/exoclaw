@@ -1,9 +1,11 @@
+use axum::body::Bytes;
 use axum::{
     Router,
-    extract::State,
     extract::ws::{Message, WebSocket, WebSocketUpgrade},
+    extract::{Path, State},
+    http::StatusCode,
     response::IntoResponse,
-    routing::get,
+    routing::{get, post},
 };
 use futures::SinkExt;
 use std::collections::HashMap;
@@ -84,6 +86,7 @@ pub async fn run(config: ExoclawConfig, token: Option<String>) -> anyhow::Result
     let app = Router::new()
         .route("/ws", get(ws_handler))
         .route("/health", get(health))
+        .route("/webhook/{channel}", post(webhook_handler))
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(&addr).await?;
@@ -244,4 +247,270 @@ async fn handle_connection(mut socket: WebSocket, state: Arc<AppState>) {
     }
 
     info!("client disconnected");
+}
+
+/// Handle incoming webhook from a messaging platform.
+///
+/// 1. Look up channel adapter plugin by channel name
+/// 2. Call parse_incoming() to normalize the platform payload
+/// 3. Route through the agent loop
+/// 4. Collect the response
+/// 5. Call format_outgoing() to convert back to platform format
+/// 6. Return as HTTP response
+async fn webhook_handler(
+    Path(channel): Path<String>,
+    State(state): State<Arc<AppState>>,
+    body: Bytes,
+) -> impl IntoResponse {
+    // 1. Find channel adapter plugin
+    let adapter_name = {
+        let plugins = state.plugins.read().await;
+        plugins.find_channel_adapter(&channel).map(String::from)
+    };
+
+    let adapter_name = match adapter_name {
+        Some(name) => name,
+        None => {
+            warn!(channel = %channel, "no channel adapter found");
+            return (
+                StatusCode::NOT_FOUND,
+                format!("no channel adapter for '{channel}'"),
+            );
+        }
+    };
+
+    // 2. Parse incoming payload via WASM plugin
+    let parsed = {
+        let plugins = state.plugins.read().await;
+        plugins.call_channel_parse(&adapter_name, &body)
+    };
+
+    let parsed = match parsed {
+        Ok(v) => v,
+        Err(e) => {
+            warn!(channel = %channel, "parse_incoming failed: {e}");
+            return (
+                StatusCode::BAD_REQUEST,
+                format!("parse_incoming failed: {e}"),
+            );
+        }
+    };
+
+    // Extract message fields from normalized payload
+    let content = parsed
+        .get("content")
+        .and_then(|c| c.as_str())
+        .unwrap_or("")
+        .to_string();
+    let account = parsed
+        .get("account")
+        .and_then(|a| a.as_str())
+        .unwrap_or("webhook")
+        .to_string();
+    let peer = parsed
+        .get("peer")
+        .and_then(|p| p.as_str())
+        .unwrap_or("main")
+        .to_string();
+    let guild = parsed
+        .get("guild")
+        .and_then(|g| g.as_str())
+        .map(String::from);
+    let team = parsed
+        .get("team")
+        .and_then(|t| t.as_str())
+        .map(String::from);
+
+    if content.is_empty() {
+        return (StatusCode::BAD_REQUEST, "empty message content".to_string());
+    }
+
+    // 3. Route to agent
+    let route = {
+        let mut router = state.router.write().await;
+        router.resolve(
+            &channel,
+            &account,
+            Some(&peer),
+            guild.as_deref(),
+            team.as_deref(),
+        )
+    };
+
+    // 4. Get/create session and append user message
+    {
+        let mut store = state.store.write().await;
+        let session = store.get_or_create(&route.session_key, &route.agent_id);
+        session.messages.push(serde_json::json!({
+            "role": "user",
+            "content": content,
+        }));
+        session.message_count += 1;
+    }
+
+    // 5. Build message history
+    let messages = {
+        let store = state.store.read().await;
+        match store.get(&route.session_key) {
+            Some(session) => session.messages.clone(),
+            None => vec![serde_json::json!({"role": "user", "content": content})],
+        }
+    };
+
+    // 6. Create provider and run agent synchronously (collect full response)
+    let provider = match crate::agent::providers::from_config(&state.config.agent) {
+        Ok(p) => p,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("provider error: {e}"),
+            );
+        }
+    };
+
+    let tool_schemas = {
+        let plugin_host = state.plugins.read().await;
+        let raw_schemas = plugin_host.tool_schemas();
+        crate::agent::providers::build_tools_for_provider(
+            &state.config.agent.provider,
+            &raw_schemas,
+        )
+    };
+
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<AgentEvent>(32);
+    let system_prompt = state.config.agent.system_prompt.clone();
+    let plugins = Arc::clone(&state.plugins);
+
+    // Spawn agent task
+    tokio::spawn(async move {
+        let runner = crate::agent::AgentRunner::new();
+        let result = runner
+            .run_with_tools(
+                provider.as_ref(),
+                messages,
+                &tool_schemas,
+                system_prompt.as_deref(),
+                &plugins,
+                tx.clone(),
+            )
+            .await;
+
+        if let Err(e) = result {
+            let _ = tx
+                .send(AgentEvent::Error(format!("agent error: {e}")))
+                .await;
+            let _ = tx.send(AgentEvent::Done).await;
+        }
+    });
+
+    // 7. Collect full response text
+    let mut response_text = String::new();
+    while let Some(event) = rx.recv().await {
+        match event {
+            AgentEvent::Text(text) => response_text.push_str(&text),
+            AgentEvent::Done => break,
+            AgentEvent::Error(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("agent error: {e}"),
+                );
+            }
+            _ => {}
+        }
+    }
+
+    // 8. Append assistant response to session
+    if !response_text.is_empty() {
+        let mut store = state.store.write().await;
+        if let Some(session) = store.get_mut(&route.session_key) {
+            session.messages.push(serde_json::json!({
+                "role": "assistant",
+                "content": response_text,
+            }));
+            session.message_count += 1;
+        }
+    }
+
+    // 9. Format outgoing via channel adapter plugin
+    let formatted = {
+        let plugins = state.plugins.read().await;
+        plugins.call_channel_format(
+            &adapter_name,
+            &serde_json::json!({ "content": response_text }),
+        )
+    };
+
+    let formatted_payload = match formatted {
+        Ok(payload) => payload,
+        Err(e) => {
+            warn!(channel = %channel, "format_outgoing failed: {e}");
+            // Return raw text as fallback
+            return (StatusCode::OK, response_text);
+        }
+    };
+
+    // 10. HTTP proxy: if format_outgoing returned JSON with a "url" field,
+    //     the host makes the API call on behalf of the plugin (T045).
+    //     Plugin never sees API tokens — the host manages credentials.
+    let formatted_json: Option<serde_json::Value> = serde_json::from_slice(&formatted_payload).ok();
+
+    if let Some(ref json) = formatted_json {
+        if let Some(proxy_url) = json.get("url").and_then(|u| u.as_str()) {
+            // Validate against allowed_hosts capability
+            let allowed = {
+                let plugins = state.plugins.read().await;
+                plugins.allowed_hosts(&adapter_name)
+            };
+
+            let url_host = url::Url::parse(proxy_url)
+                .ok()
+                .and_then(|u| u.host_str().map(String::from));
+
+            let is_allowed = match &url_host {
+                Some(host) => allowed.iter().any(|h| h == host),
+                None => false,
+            };
+
+            if is_allowed {
+                let proxy_body = json
+                    .get("body")
+                    .cloned()
+                    .unwrap_or(serde_json::json!({"text": response_text}));
+
+                let client = reqwest::Client::new();
+                match client.post(proxy_url).json(&proxy_body).send().await {
+                    Ok(resp) => {
+                        let status = resp.status();
+                        let body = resp.text().await.unwrap_or_default();
+                        info!(channel = %channel, url = %proxy_url, %status, "proxy call completed");
+                        return (StatusCode::OK, body);
+                    }
+                    Err(e) => {
+                        warn!(channel = %channel, url = %proxy_url, "proxy call failed: {e}");
+                        return (StatusCode::BAD_GATEWAY, format!("proxy call failed: {e}"));
+                    }
+                }
+            } else {
+                warn!(
+                    channel = %channel,
+                    url = %proxy_url,
+                    "proxy denied: host not in allowed_hosts"
+                );
+                return (
+                    StatusCode::FORBIDDEN,
+                    format!(
+                        "proxy denied: {} not in allowed_hosts for adapter '{}'",
+                        url_host.as_deref().unwrap_or("unknown"),
+                        adapter_name
+                    ),
+                );
+            }
+        }
+    }
+
+    // No proxy URL — return the formatted payload directly
+    (
+        StatusCode::OK,
+        String::from_utf8_lossy(&formatted_payload).to_string(),
+    )
 }
