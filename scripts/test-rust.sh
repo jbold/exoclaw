@@ -19,16 +19,24 @@ if command -v rustup >/dev/null 2>&1; then
   fi
 fi
 
-# Channel adapter integration tests load the mock-channel WASM fixture from
-# examples/mock-channel/target/...; build it explicitly for clean CI runners.
-if [[ -f examples/mock-channel/Cargo.toml ]]; then
+# Integration tests load fixture WASM plugins from examples/*/target/...;
+# build them explicitly for clean CI runners.
+if [[ -f examples/mock-channel/Cargo.toml || -f examples/echo-plugin/Cargo.toml ]]; then
   if command -v rustup >/dev/null 2>&1; then
     rustup target add wasm32-unknown-unknown
   fi
-  cargo build \
-    --manifest-path examples/mock-channel/Cargo.toml \
-    --release \
-    --target wasm32-unknown-unknown
+  if [[ -f examples/mock-channel/Cargo.toml ]]; then
+    cargo build \
+      --manifest-path examples/mock-channel/Cargo.toml \
+      --release \
+      --target wasm32-unknown-unknown
+  fi
+  if [[ -f examples/echo-plugin/Cargo.toml ]]; then
+    cargo build \
+      --manifest-path examples/echo-plugin/Cargo.toml \
+      --release \
+      --target wasm32-unknown-unknown
+  fi
 fi
 
 # Backend tests compile rust-embed assets from ui/dist. Keep a minimal
