@@ -1,0 +1,56 @@
+[package]
+name = "exoclaw"
+version = "0.1.0"
+edition = "2024"
+description = "A secure, WASM-sandboxed AI agent runtime"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/exoclaw/exoclaw"
+keywords = ["ai", "agent", "wasm", "runtime", "llm"]
+categories = ["command-line-utilities", "web-programming"]
+
+[dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# HTTP/WebSocket server
+axum = { version = "0.8", features = ["ws"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors", "trace"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rmp-serde = "1"                    # MessagePack
+
+# WASM plugin host
+extism = "1"
+
+# HTTP client (for LLM API calls)
+reqwest = { version = "0.12", features = ["stream", "rustls-tls", "json"] }
+
+# Message bus
+async-nats = "0.38"
+
+# CLI
+clap = { version = "4", features = ["derive", "env"] }
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Utilities
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }
+thiserror = "2"
+anyhow = "1"
+futures = "0.3"
+tokio-stream = "0.1"
+subtle = "2"
+
+[dev-dependencies]
+tokio-test = "0.4"
+
+[profile.release]
+lto = true
+strip = true
+codegen-units = 1

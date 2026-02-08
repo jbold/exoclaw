@@ -1,0 +1,42 @@
+# exoclaw configuration
+# Copy to ~/.exoclaw/config.toml or pass via --config flag.
+
+[gateway]
+port = 7200
+bind = "127.0.0.1"
+# token = "set-via-EXOCLAW_TOKEN-env-var"
+
+[agent]
+provider = "anthropic"
+model = "claude-sonnet-4-5-20250929"
+max_tokens = 4096
+
+[agent.fallback]
+provider = "openai"
+model = "gpt-4o"
+
+# Optional: NATS message bus for persistence/replay
+# [bus]
+# url = "nats://localhost:4222"
+
+# Plugin declarations — each channel is a WASM module
+[[plugins]]
+name = "telegram"
+path = "plugins/telegram.wasm"
+# Capabilities granted to this plugin:
+capabilities = ["http:api.telegram.org", "store:sessions"]
+
+[[plugins]]
+name = "whatsapp"
+path = "plugins/whatsapp.wasm"
+capabilities = ["http:web.whatsapp.com", "store:sessions"]
+
+# Session routing bindings (priority: peer > guild > team > account > channel > default)
+[[bindings]]
+channel = "telegram"
+agent_id = "personal"
+
+[[bindings]]
+channel = "whatsapp"
+peer_id = "work-group-123"
+agent_id = "work"
