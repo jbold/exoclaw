@@ -1,3 +1,5 @@
+pub mod providers;
+
 use futures::StreamExt;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -6,8 +8,8 @@ use tracing::info;
 
 /// Minimal LLM agent runner. Calls provider APIs with tool support.
 ///
-/// This is the core loop: send messages → get response → if tool_use, execute
-/// tool via WASM sandbox → feed result back → repeat until text response.
+/// This is the core loop: send messages -> get response -> if tool_use, execute
+/// tool via WASM sandbox -> feed result back -> repeat until text response.
 
 #[derive(Clone)]
 pub struct AgentRunner {
@@ -36,6 +38,15 @@ pub enum AgentEvent {
         id: String,
         name: String,
         input: serde_json::Value,
+    },
+    ToolResult {
+        tool_use_id: String,
+        content: String,
+        is_error: bool,
+    },
+    Usage {
+        input_tokens: u32,
+        output_tokens: u32,
     },
     Done,
     Error(String),

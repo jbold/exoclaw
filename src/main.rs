@@ -1,11 +1,5 @@
-mod agent;
-mod bus;
-mod gateway;
-mod router;
-mod sandbox;
-mod store;
-
 use clap::{Parser, Subcommand};
+use tracing::info;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
@@ -21,13 +15,13 @@ struct Cli {
 enum Commands {
     /// Start the gateway server
     Gateway {
-        /// Port to bind to
-        #[arg(short, long, default_value = "7200")]
-        port: u16,
+        /// Port to bind to (overrides config file)
+        #[arg(short, long)]
+        port: Option<u16>,
 
-        /// Bind address
-        #[arg(short, long, default_value = "127.0.0.1")]
-        bind: String,
+        /// Bind address (overrides config file)
+        #[arg(short, long)]
+        bind: Option<String>,
 
         /// Auth token (required for non-loopback)
         #[arg(long, env = "EXOCLAW_TOKEN")]
@@ -65,14 +59,32 @@ async fn main() -> anyhow::Result<()> {
 
     match cli.command {
         Commands::Gateway { port, bind, token } => {
-            gateway::run(gateway::Config { port, bind, token }).await
+            let mut config = exoclaw::config::load()?;
+
+            // CLI args override config file
+            if let Some(p) = port {
+                config.gateway.port = p;
+            }
+            if let Some(b) = bind {
+                config.gateway.bind = b;
+            }
+
+            info!(
+                provider = %config.agent.provider,
+                model = %config.agent.model,
+                plugins = config.plugins.len(),
+                bindings = config.bindings.len(),
+                "config loaded"
+            );
+
+            exoclaw::gateway::run(config, token).await
         }
         Commands::Plugin { action } => match action {
             PluginAction::List => {
                 println!("No plugins loaded.");
                 Ok(())
             }
-            PluginAction::Load { path } => sandbox::load_plugin(&path).await,
+            PluginAction::Load { path } => exoclaw::sandbox::load_plugin(&path).await,
         },
         Commands::Status => {
             println!("exoclaw v{}", env!("CARGO_PKG_VERSION"));
