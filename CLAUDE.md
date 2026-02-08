@@ -79,8 +79,9 @@ Client (WebSocket) → gateway/ (axum, auth, JSON-RPC)
 
 ### Module Relationships
 
-- `main.rs` — CLI entry point (clap). Creates `gateway::Config` and calls `gateway::run()` or `sandbox::load_plugin()`.
-- `gateway/server.rs` — Owns `AppState` which holds `SessionRouter` and `Arc<RwLock<PluginHost>>`. Starts axum server, handles WebSocket upgrade, runs auth-then-message-loop per connection.
+- `main.rs` — CLI entry point (clap). Handles `onboard` (API key setup via `run_onboard()`), `gateway` (starts server), `plugin` (loads WASM plugins), and `status` commands.
+- `gateway/server.rs` — Owns `AppState` which holds `SessionRouter`, `PluginHost`, `SessionStore`, `MemoryEngine`, `ExoclawConfig`, and per-session locks. Starts axum server, handles WebSocket upgrade, runs auth-then-message-loop per connection. Serves embedded UI at `/` via `rust-embed`.
+- `secrets.rs` — Credential storage. Stores API keys at `~/.exoclaw/credentials/{provider}.key` with mode 0600. Functions: `store_api_key()`, `load_api_key()`. Provider whitelist prevents path traversal.
 - `gateway/protocol.rs` — JSON-RPC dispatch. Accesses `AppState` to query plugins and router. Methods: `ping`, `status`, `chat.send` (stub), `plugin.list`.
 - `gateway/auth.rs` — `verify_connect()` parses first WS message for token, compares with `subtle::ConstantTimeEq`. Returns true if no token configured (loopback mode).
 - `router/mod.rs` — `SessionRouter` holds `Vec<Binding>` and `HashMap<String, SessionState>`. `resolve()` walks bindings in priority order, creates/updates sessions keyed as `{agent_id}:{channel}:{account}:{peer}`.
@@ -127,8 +128,8 @@ See `specs/001-core-runtime/` for the full feature specification:
 - `quickstart.md` — Getting started guide
 
 ## Active Technologies
-- Rust 2024 edition (existing), Leptos 0.8 (new) + axum 0.8 (existing), leptos 0.8 + leptos_axum (new), gloo-net (new, WASM WebSocket client), pulldown-cmark (new, WASM markdown), rpassword 7 (already added in uncommitted code) (002-onboard-chat-ui)
-- Filesystem only — `~/.exoclaw/credentials/` for keys, `~/.exoclaw/config.toml` for config (002-onboard-chat-ui)
+- Rust 2024 edition, Leptos 0.7 CSR + axum 0.8, gloo-net (WASM WebSocket client), pulldown-cmark (WASM markdown), rpassword 7, rust-embed (static asset embedding)
+- Filesystem only — `~/.exoclaw/credentials/` for keys, `~/.exoclaw/config.toml` for config
 
 ## Recent Changes
-- 002-onboard-chat-ui: Added Rust 2024 edition (existing), Leptos 0.8 (new) + axum 0.8 (existing), leptos 0.8 + leptos_axum (new), gloo-net (new, WASM WebSocket client), pulldown-cmark (new, WASM markdown), rpassword 7 (already added in uncommitted code)
+- 002-onboard-chat-ui: Added Leptos 0.7 CSR chat UI (trunk + rust-embed), onboarding CLI, gloo-net WebSocket client, pulldown-cmark markdown rendering, 14 integration tests
