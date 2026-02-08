@@ -19,6 +19,18 @@ if command -v rustup >/dev/null 2>&1; then
   fi
 fi
 
+# Channel adapter integration tests load the mock-channel WASM fixture from
+# examples/mock-channel/target/...; build it explicitly for clean CI runners.
+if [[ -f examples/mock-channel/Cargo.toml ]]; then
+  if command -v rustup >/dev/null 2>&1; then
+    rustup target add wasm32-unknown-unknown
+  fi
+  cargo build \
+    --manifest-path examples/mock-channel/Cargo.toml \
+    --release \
+    --target wasm32-unknown-unknown
+fi
+
 # Backend tests compile rust-embed assets from ui/dist. Keep a minimal
 # placeholder so CI can run Rust tests without building the full UI bundle.
 mkdir -p ui/dist
