@@ -73,6 +73,9 @@ git clone https://github.com/exoclaw/exoclaw.git
 cd exoclaw
 cargo build --release
 
+# First-time setup (secure prompt for provider + API key)
+cargo run -- onboard
+
 # Start the gateway (loopback, no auth required)
 cargo run -- gateway
 
@@ -85,6 +88,12 @@ cargo run -- status
 # Load a WASM plugin
 cargo run -- plugin load ./plugins/telegram.wasm
 ```
+
+`onboard` stores the API key in `~/.exoclaw/credentials/{provider}.key` with file mode `600`. API key resolution order:
+
+1. `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` environment variable (highest priority)
+2. Credential file at `~/.exoclaw/credentials/{provider}.key`
+3. `api_key` field in config file (not recommended)
 
 The gateway binds to `127.0.0.1:7200` by default. When binding to a non-loopback address, an auth token is required (via `--token` or `EXOCLAW_TOKEN` env var).
 

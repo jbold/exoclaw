@@ -5,5 +5,6 @@ pub mod gateway;
 pub mod memory;
 pub mod router;
 pub mod sandbox;
+pub mod secrets;
 pub mod store;
 pub mod types;

@@ -1,9 +1,9 @@
-use serde::Deserialize;
-use std::path::PathBuf;
+use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
 use tracing::info;
 
 /// Top-level configuration loaded from TOML.
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, Serialize)]
 #[serde(default)]
 pub struct ExoclawConfig {
     pub gateway: GatewayConfig,
@@ -18,7 +18,7 @@ pub struct ExoclawConfig {
     pub memory: MemoryConfig,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct GatewayConfig {
     #[serde(default = "default_port")]
     pub port: u16,
@@ -42,7 +42,7 @@ fn default_bind() -> String {
     "127.0.0.1".into()
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct AgentDefConfig {
     #[serde(default = "default_agent_id")]
     pub id: String,
@@ -89,7 +89,7 @@ fn default_max_tokens() -> u32 {
     4096
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct PluginConfig {
     pub name: String,
     pub path: String,
@@ -97,7 +97,7 @@ pub struct PluginConfig {
     pub capabilities: Vec<String>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct BindingConfig {
     pub agent_id: String,
     pub channel: Option<String>,
@@ -107,14 +107,14 @@ pub struct BindingConfig {
     pub team_id: Option<String>,
 }
 
-#[derive(Debug, Default, Clone, Deserialize)]
+#[derive(Debug, Default, Clone, Deserialize, Serialize)]
 pub struct BudgetConfig {
     pub session: Option<u64>,
     pub daily: Option<u64>,
     pub monthly: Option<u64>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct MemoryConfig {
     #[serde(default = "default_episodic_window")]
     pub episodic_window: u32,
@@ -145,7 +145,7 @@ fn default_semantic_enabled() -> bool {
 /// 2. `~/.exoclaw/config.toml`
 /// 3. Zero-config defaults (no file needed)
 pub fn load() -> anyhow::Result<ExoclawConfig> {
-    let path = config_path();
+    let path = resolve_path();
 
     if path.exists() {
         let content = std::fs::read_to_string(&path)
@@ -166,7 +166,8 @@ pub fn load() -> anyhow::Result<ExoclawConfig> {
     }
 }
 
-fn config_path() -> PathBuf {
+/// Resolve config file path based on EXOCLAW_CONFIG or ~/.exoclaw/config.toml.
+pub fn resolve_path() -> PathBuf {
     if let Ok(path) = std::env::var("EXOCLAW_CONFIG") {
         return PathBuf::from(path);
     }
@@ -174,12 +175,41 @@ fn config_path() -> PathBuf {
     PathBuf::from(home).join(".exoclaw").join("config.toml")
 }
 
+/// Save config to the default path with secure permissions.
+pub fn save(config: &ExoclawConfig) -> anyhow::Result<PathBuf> {
+    let path = resolve_path();
+    save_to_path(config, &path)?;
+    Ok(path)
+}
+
+/// Save config to an explicit path (used by onboarding and tests).
+pub fn save_to_path(config: &ExoclawConfig, path: &Path) -> anyhow::Result<()> {
+    validate(config)?;
+    let content =
+        toml::to_string_pretty(config).map_err(|e| anyhow::anyhow!("toml encode: {e}"))?;
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| anyhow::anyhow!("failed to create {}: {e}", parent.display()))?;
+        set_secure_dir_permissions(parent)?;
+    }
+
+    std::fs::write(path, content)
+        .map_err(|e| anyhow::anyhow!("failed to write {}: {e}", path.display()))?;
+    set_secure_file_permissions(path)?;
+    Ok(())
+}
+
 /// Resolve API key from environment variables if not set in config.
 fn resolve_api_key(config: &mut ExoclawConfig) {
     if config.agent.api_key.is_none() {
         config.agent.api_key = match config.agent.provider.as_str() {
-            "anthropic" => std::env::var("ANTHROPIC_API_KEY").ok(),
-            "openai" => std::env::var("OPENAI_API_KEY").ok(),
+            "anthropic" => std::env::var("ANTHROPIC_API_KEY")
+                .ok()
+                .or_else(|| crate::secrets::load_api_key("anthropic")),
+            "openai" => std::env::var("OPENAI_API_KEY")
+                .ok()
+                .or_else(|| crate::secrets::load_api_key("openai")),
             _ => None,
         };
     }
@@ -213,5 +243,29 @@ fn validate(config: &ExoclawConfig) -> anyhow::Result<()> {
         }
     }
 
+    Ok(())
+}
+
+#[cfg(unix)]
+fn set_secure_dir_permissions(path: &Path) -> anyhow::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+        .map_err(|e| anyhow::anyhow!("failed to chmod 700 {}: {e}", path.display()))
+}
+
+#[cfg(not(unix))]
+fn set_secure_dir_permissions(_path: &Path) -> anyhow::Result<()> {
+    Ok(())
+}
+
+#[cfg(unix)]
+fn set_secure_file_permissions(path: &Path) -> anyhow::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+        .map_err(|e| anyhow::anyhow!("failed to chmod 600 {}: {e}", path.display()))
+}
+
+#[cfg(not(unix))]
+fn set_secure_file_permissions(_path: &Path) -> anyhow::Result<()> {
     Ok(())
 }

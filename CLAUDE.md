@@ -14,11 +14,12 @@ A secure, WASM-sandboxed AI agent runtime written in Rust. The "infrastructure l
 cargo check                        # type-check (fast feedback loop)
 cargo build                        # debug build
 cargo build --release              # release build (~21MB, LTO + strip)
+cargo run -- onboard               # first-time setup (secure API key entry)
 cargo run -- status                # smoke test
 cargo run -- gateway --port 7200   # start gateway on loopback (no auth needed)
 cargo run -- gateway --bind 0.0.0.0 --token my-secret  # non-loopback requires token
 cargo run -- plugin load ./path/to/plugin.wasm          # load a WASM plugin
-cargo test                         # run tests (none yet)
+cargo test                         # run all tests (134 tests)
 cargo clippy                       # lint (fix all non-dead-code warnings)
 cargo fmt                          # format (canonical style, zero config)
 cargo fmt --check                  # check formatting without modifying
@@ -26,6 +27,23 @@ RUST_LOG=debug cargo run -- gateway # enable debug logging
 ```
 
 Dead-code warnings from `cargo clippy` are expected until modules are wired together. All other clippy warnings should be zero.
+
+### Building the Chat UI (WASM)
+
+```bash
+# Prerequisites (one-time)
+rustup target add wasm32-unknown-unknown
+cargo install trunk
+
+# Build the Leptos frontend
+trunk build                        # dev build (fast, no wasm-opt)
+trunk build --release              # release build (smaller bundle)
+
+# The output goes to ui/dist/ which is embedded in the server binary via rust-embed.
+# After rebuilding the UI, recompile the server: cargo build
+```
+
+The Chat UI is a Leptos 0.7 CSR app in `ui/`. It compiles to WASM and is embedded in the server binary. The gateway serves it at `/`.
 
 ### Building the echo plugin (WASM)
 
@@ -40,6 +58,8 @@ Plugin crates use `crate-type = ["cdylib"]` and depend on `extism-pdk`.
 ## Architecture
 
 ```
+Browser (http://localhost:7200) → ui/ (Leptos WASM, embedded via rust-embed)
+                                      ↓ WebSocket
 Client (WebSocket) → gateway/ (axum, auth, JSON-RPC)
                         → router/ (hierarchical session routing)
                             → agent/ (LLM streaming: Anthropic + OpenAI SSE)
@@ -76,8 +96,11 @@ Client (WebSocket) → gateway/ (axum, auth, JSON-RPC)
 - **axum 0.8**: WebSocket `.close()` requires `use futures::SinkExt`.
 - **Auth enforcement**: Non-loopback bind requires `--token` or `EXOCLAW_TOKEN` env var. Loopback skips auth entirely (returns true with no token check).
 - **Plugin instances**: Created fresh per `call()` invocation for isolation — the `PluginEntry` stores the `Manifest`, not a live `Plugin`.
-- **Rust edition 2024**: Both the main crate and echo-plugin use `edition = "2024"`.
-- **No tests exist yet**. `dev-dependencies` has `tokio-test` ready.
+- **Rust edition 2024**: All workspace crates use `edition = "2024"`.
+- **Cargo workspace**: Root crate `exoclaw` (server binary) + `ui/` crate `exoclaw-ui` (Leptos WASM frontend). They share a `Cargo.lock` and `target/` directory.
+- **Leptos 0.7 CSR**: The UI crate uses client-side rendering (`features = ["csr"]`). Built with `trunk build` which produces `ui/dist/` (index.html + WASM + JS glue). The server binary embeds these files via `rust-embed`.
+- **UI asset embedding**: `rust-embed` embeds `ui/dist/` at compile time. After changing UI code, rebuild with `trunk build` then `cargo build` to re-embed.
+- **Credential storage**: API keys stored at `~/.exoclaw/credentials/{provider}.key` (mode 0600). Resolution: env var > credential file > None. Config file never contains the key.
 
 ## Design Decisions
 
@@ -102,3 +125,10 @@ See `specs/001-core-runtime/` for the full feature specification:
 - `data-model.md` — Entity schemas and relationships
 - `contracts/jsonrpc-spec.md` — WebSocket JSON-RPC protocol
 - `quickstart.md` — Getting started guide
+
+## Active Technologies
+- Rust 2024 edition (existing), Leptos 0.8 (new) + axum 0.8 (existing), leptos 0.8 + leptos_axum (new), gloo-net (new, WASM WebSocket client), pulldown-cmark (new, WASM markdown), rpassword 7 (already added in uncommitted code) (002-onboard-chat-ui)
+- Filesystem only — `~/.exoclaw/credentials/` for keys, `~/.exoclaw/config.toml` for config (002-onboard-chat-ui)
+
+## Recent Changes
+- 002-onboard-chat-ui: Added Rust 2024 edition (existing), Leptos 0.8 (new) + axum 0.8 (existing), leptos 0.8 + leptos_axum (new), gloo-net (new, WASM WebSocket client), pulldown-cmark (new, WASM markdown), rpassword 7 (already added in uncommitted code)

@@ -2,4 +2,16 @@
 **/target/
 *.wasm
 .env
+.env*
 .claude/
+ui/dist/
+*.rs.bk
+*.rlib
+*.prof*
+.idea/
+*.log
+.DS_Store
+Thumbs.db
+*.tmp
+*.swp
+.vscode/
