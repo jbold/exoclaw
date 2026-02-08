@@ -5,7 +5,6 @@ use std::collections::HashMap;
 /// once the core loop is proven.
 ///
 /// Stores conversation history per session key.
-
 pub struct SessionStore {
     sessions: HashMap<String, Session>,
 }

@@ -1,7 +1,7 @@
 use axum::{
     Router,
-    extract::ws::{Message, WebSocket, WebSocketUpgrade},
     extract::State,
+    extract::ws::{Message, WebSocket, WebSocketUpgrade},
     response::IntoResponse,
     routing::get,
 };
@@ -65,10 +65,7 @@ async fn health() -> &'static str {
     "ok"
 }
 
-async fn ws_handler(
-    ws: WebSocketUpgrade,
-    State(state): State<Arc<AppState>>,
-) -> impl IntoResponse {
+async fn ws_handler(ws: WebSocketUpgrade, State(state): State<Arc<AppState>>) -> impl IntoResponse {
     ws.on_upgrade(move |socket| handle_connection(socket, state))
 }
 
@@ -90,9 +87,7 @@ async fn handle_connection(mut socket: WebSocket, state: Arc<AppState>) {
     }
 
     let _ = socket
-        .send(Message::Text(
-            r#"{"ok":true,"version":"0.1.0"}"#.into(),
-        ))
+        .send(Message::Text(r#"{"ok":true,"version":"0.1.0"}"#.into()))
         .await;
 
     info!("client connected");

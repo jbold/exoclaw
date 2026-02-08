@@ -1,5 +1,5 @@
-mod server;
 mod auth;
 mod protocol;
+mod server;
 
-pub use server::{run, Config};
+pub use server::{Config, run};

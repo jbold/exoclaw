@@ -5,7 +5,6 @@ use tracing::info;
 ///
 /// Subject pattern: exoclaw.{channel}.{account}.{peer}
 /// This maps directly to the session routing hierarchy.
-
 pub struct MessageBus {
     client: Option<Client>,
 }
